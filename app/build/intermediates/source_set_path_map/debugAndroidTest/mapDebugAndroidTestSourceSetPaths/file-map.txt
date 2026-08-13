@@ -1,0 +1,4 @@
+com.shengji.app.test.app-androidTest-0 E:\java\shengji\ShengJi\app\build\generated\res\resValues\androidTest\debug
+com.shengji.app.test.app-mergeDebugAndroidTestResources-1 E:\java\shengji\ShengJi\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
+com.shengji.app.test.app-mergeDebugAndroidTestResources-2 E:\java\shengji\ShengJi\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
+com.shengji.app.test.app-debugAndroidTest-3 E:\java\shengji\ShengJi\app\build\intermediates\merged_res\debugAndroidTest\mergeDebugAndroidTestResources
