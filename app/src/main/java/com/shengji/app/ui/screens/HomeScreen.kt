@@ -10,15 +10,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.shengji.app.ui.utils.rememberScreenSize
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    hasSavedProgress: Boolean = false,
+    onContinueGame: () -> Unit = {},
     onNewGame: () -> Unit,
     onMultiplayer: () -> Unit,
     onHistory: () -> Unit
 ) {
     var showRules by remember { mutableStateOf(false) }
+    val screenSize = rememberScreenSize()
 
     Scaffold(
         topBar = {
@@ -44,7 +48,7 @@ fun HomeScreen(
             Column(
                 modifier = Modifier
                     .widthIn(max = 400.dp)
-                    .padding(horizontal = 32.dp),
+                    .padding(horizontal = screenSize.spacingLarge * 2),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -52,7 +56,7 @@ fun HomeScreen(
                     style = MaterialTheme.typography.displayLarge
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(screenSize.spacingLarge))
 
                 Text(
                     text = "升级",
@@ -66,30 +70,51 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(screenSize.spacingLarge * 2))
 
-                // 开始新游戏 - 独占一行
-                Button(
-                    onClick = onNewGame,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
+                // 继续游戏 + 开始新游戏 - 同一行
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(screenSize.spacingMedium)
                 ) {
-                    Text("开始新游戏", style = MaterialTheme.typography.titleSmall)
+                    // 继续游戏按钮（只有有存档时显示）
+                    if (hasSavedProgress) {
+                        Button(
+                            onClick = onContinueGame,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(screenSize.buttonHeightLarge),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary
+                            )
+                        ) {
+                            Text("继续游戏", style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
+
+                    // 开始新游戏按钮
+                    Button(
+                        onClick = onNewGame,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(screenSize.buttonHeightLarge)
+                    ) {
+                        Text("开始新游戏", style = MaterialTheme.typography.titleSmall)
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(screenSize.spacingMedium))
 
                 // 联机对战 和 历史记录 占一行
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(screenSize.spacingMedium)
                 ) {
                     Button(
                         onClick = onMultiplayer,
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp),
+                            .height(screenSize.buttonHeightLarge),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.secondary
                         )
@@ -101,13 +126,13 @@ fun HomeScreen(
                         onClick = onHistory,
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp)
+                            .height(screenSize.buttonHeightLarge)
                     ) {
                         Text("历史记录", style = MaterialTheme.typography.titleSmall)
                     }
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(screenSize.spacingLarge * 2))
 
                 Text(
                     text = "v1.0 · 单机版",

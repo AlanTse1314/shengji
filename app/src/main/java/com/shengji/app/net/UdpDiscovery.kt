@@ -8,6 +8,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * UDP 设备发现
@@ -36,12 +37,20 @@ class UdpDiscovery(private val context: Context) {
     var isRunning = false
         private set
 
-    /** 已发现的房间列表 */
-    private val _rooms = mutableMapOf<String, DiscoveredRoom>()
+    /** 已发现的房间列表（使用 ConcurrentHashMap 保证线程安全） */
+    private val _rooms = ConcurrentHashMap<String, DiscoveredRoom>()
     val rooms: Map<String, DiscoveredRoom> get() = _rooms.toMap()
 
     /** 房间列表变化回调 */
     var onRoomsChanged: ((List<DiscoveredRoom>) -> Unit)? = null
+
+    // 广播参数（可动态更新）
+    @Volatile private var currentDeviceName: String = ""
+    @Volatile private var currentRoomStatus: String = "waiting"
+    @Volatile private var currentPlayerCount: Int = 1
+
+    // 缓存本机 IP，避免重复查询
+    @Volatile private var cachedLocalIp: String? = null
 
     /**
      * 启动 UDP 广播和监听
@@ -54,13 +63,19 @@ class UdpDiscovery(private val context: Context) {
         if (isRunning) return
         isRunning = true
 
-        Log.d(TAG, "UDP 发现启动: $deviceName")
+        currentDeviceName = deviceName
+        currentRoomStatus = roomStatus
+        currentPlayerCount = playerCount
+
+        // 缓存本机 IP
+        cachedLocalIp = getLocalIpAddress()
+        Log.d(TAG, "UDP 发现启动: $deviceName, 本机IP: $cachedLocalIp")
 
         // 启动广播发送
         broadcastJob = scope.launch {
             while (isActive && isRunning) {
                 try {
-                    sendBroadcast(deviceName, roomStatus, playerCount)
+                    sendBroadcast()
                 } catch (e: Exception) {
                     Log.e(TAG, "广播发送失败", e)
                 }
@@ -70,11 +85,7 @@ class UdpDiscovery(private val context: Context) {
 
         // 启动广播监听
         listenJob = scope.launch {
-            try {
-                listenForBroadcasts()
-            } catch (e: Exception) {
-                Log.e(TAG, "广播监听失败", e)
-            }
+            listenForBroadcasts()
         }
 
         // 启动超时清理
@@ -103,62 +114,102 @@ class UdpDiscovery(private val context: Context) {
      * 更新广播信息（房间状态变化时调用）
      */
     fun updateBroadcastInfo(deviceName: String, roomStatus: String, playerCount: Int) {
-        // 广播会在下次循环时使用新参数
+        currentDeviceName = deviceName
+        currentRoomStatus = roomStatus
+        currentPlayerCount = playerCount
+        Log.d(TAG, "更新广播信息: status=$roomStatus, players=$playerCount")
     }
 
     /**
      * 发送 UDP 广播
      */
-    private fun sendBroadcast(deviceName: String, roomStatus: String, playerCount: Int) {
-        val localAddress = getLocalIpAddress() ?: return
+    private fun sendBroadcast() {
+        val localAddress = cachedLocalIp ?: return
 
         val message = BroadcastMessage(
-            deviceName = deviceName,
+            deviceName = currentDeviceName,
             hostAddress = localAddress,
-            roomStatus = roomStatus,
-            playerCount = playerCount
+            roomStatus = currentRoomStatus,
+            playerCount = currentPlayerCount
         )
         val data = gson.toJson(message).toByteArray()
 
         DatagramSocket().use { socket ->
             socket.broadcast = true
-            val broadcastAddress = InetAddress.getByName("255.255.255.255")
-            val packet = DatagramPacket(data, data.size, broadcastAddress, BROADCAST_PORT)
-            socket.send(packet)
+
+            // 尝试子网广播地址（更可靠）
+            val broadcastAddresses = getBroadcastAddresses()
+            for (broadcastAddr in broadcastAddresses) {
+                try {
+                    val packet = DatagramPacket(data, data.size, broadcastAddr, BROADCAST_PORT)
+                    socket.send(packet)
+                } catch (e: Exception) {
+                    Log.w(TAG, "发送广播到 $broadcastAddr 失败: ${e.message}")
+                }
+            }
         }
+    }
+
+    /**
+     * 获取所有可用的广播地址
+     */
+    private fun getBroadcastAddresses(): List<InetAddress> {
+        val addresses = mutableListOf<InetAddress>()
+        try {
+            // 添加子网广播地址
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                if (networkInterface.isLoopback || !networkInterface.isUp) continue
+
+                val interfaceAddresses = networkInterface.interfaceAddresses
+                for (interfaceAddr in interfaceAddresses) {
+                    val broadcast = interfaceAddr.broadcast
+                    if (broadcast != null) {
+                        addresses.add(broadcast)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "获取广播地址失败: ${e.message}")
+        }
+
+        // 添加通用广播地址作为后备
+        try {
+            addresses.add(InetAddress.getByName("255.255.255.255"))
+        } catch (_: Exception) {}
+
+        return addresses.distinct()
     }
 
     /**
      * 监听 UDP 广播
      */
     private fun listenForBroadcasts() {
-        val socket = DatagramSocket(BROADCAST_PORT)
-        socket.reuseAddress = true
-        socket.soTimeout = 2000  // 2 秒超时，便于检查 isRunning
+        var socket: DatagramSocket? = null
+        try {
+            socket = DatagramSocket(BROADCAST_PORT)
+            socket.reuseAddress = true
+            socket.soTimeout = 2000  // 2 秒超时，便于检查 isRunning
 
-        val buffer = ByteArray(BUFFER_SIZE)
+            val buffer = ByteArray(BUFFER_SIZE)
 
-        while (isRunning) {
-            try {
-                val packet = DatagramPacket(buffer, buffer.size)
-                socket.receive(packet)
+            while (isRunning) {
+                try {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket.receive(packet)
 
-                val message = String(packet.data, 0, packet.length)
-                val broadcast = gson.fromJson(message, BroadcastMessage::class.java)
+                    val message = String(packet.data, 0, packet.length)
+                    val broadcast = gson.fromJson(message, BroadcastMessage::class.java)
 
-                // 过滤自己的广播
-                val localAddress = getLocalIpAddress()
-                if (broadcast.hostAddress == localAddress) continue
-
-                // 更新房间列表
-                val key = broadcast.hostAddress
-                val existing = _rooms[key]
-                if (existing != null) {
-                    existing.lastSeen = System.currentTimeMillis()
-                    existing.apply {
-                        // 更新字段（DiscoveredRoom 是 var）
+                    // 过滤自己的广播（通过 IP 地址）
+                    val localAddress = cachedLocalIp
+                    if (localAddress != null && broadcast.hostAddress == localAddress) {
+                        continue
                     }
-                } else {
+
+                    // 更新房间列表
+                    val key = broadcast.hostAddress
                     _rooms[key] = DiscoveredRoom(
                         deviceName = broadcast.deviceName,
                         hostAddress = broadcast.hostAddress,
@@ -167,19 +218,26 @@ class UdpDiscovery(private val context: Context) {
                         maxPlayers = broadcast.maxPlayers,
                         lastSeen = System.currentTimeMillis()
                     )
+
+                    // 通知 UI
+                    val aliveRooms = _rooms.values.filter { it.isAlive }.toList()
+                    onRoomsChanged?.invoke(aliveRooms)
+
+                    Log.d(TAG, "发现房间: ${broadcast.deviceName} @ ${broadcast.hostAddress}")
+
+                } catch (e: java.net.SocketTimeoutException) {
+                    // 超时正常，继续循环
+                } catch (e: Exception) {
+                    if (isRunning) Log.e(TAG, "接收广播异常", e)
                 }
-
-                // 通知 UI
-                onRoomsChanged?.invoke(_rooms.values.filter { it.isAlive }.toList())
-
-            } catch (e: java.net.SocketTimeoutException) {
-                // 超时正常，继续循环
-            } catch (e: Exception) {
-                if (isRunning) Log.e(TAG, "接收广播异常", e)
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "启动监听失败", e)
+        } finally {
+            try {
+                socket?.close()
+            } catch (_: Exception) {}
         }
-
-        socket.close()
     }
 
     /**
@@ -187,8 +245,9 @@ class UdpDiscovery(private val context: Context) {
      */
     private fun cleanupStaleDevices() {
         val now = System.currentTimeMillis()
-        val iterator = _rooms.entries.iterator()
         var changed = false
+
+        val iterator = _rooms.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
             if (now - entry.value.lastSeen > DEVICE_TIMEOUT) {
@@ -196,8 +255,10 @@ class UdpDiscovery(private val context: Context) {
                 changed = true
             }
         }
+
         if (changed) {
-            onRoomsChanged?.invoke(_rooms.values.filter { it.isAlive }.toList())
+            val aliveRooms = _rooms.values.filter { it.isAlive }.toList()
+            onRoomsChanged?.invoke(aliveRooms)
         }
     }
 

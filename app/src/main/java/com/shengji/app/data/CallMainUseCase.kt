@@ -114,9 +114,13 @@ object CallMainUseCase {
     }
 
     /**
-     * AI 自动叫主逻辑
+     * AI 自动叫主逻辑（增强版）
      *
      * 扫描手牌，找是否有可以叫主的对子，选择最优的叫主方案。
+     * 考虑因素：
+     * 1. 有大王对/小王对时优先叫无主
+     * 2. 评估该花色的整体实力（牌数、大牌、对子）
+     * 3. 如果当前已有人叫主，评估是否值得反主
      *
      * @return 要用来叫主的一对牌，或 null（不叫）
      */
@@ -142,13 +146,63 @@ object CallMainUseCase {
         
         // 按花色优先级选择：黑桃 > 红桃 > 梅花 > 方块
         val suitPriorityOrder = listOf(Suit.SPADE, Suit.HEART, Suit.CLUB, Suit.DIAMOND)
-        for (suit in suitPriorityOrder) {
+        
+        // 评估每个花色的实力
+        val suitScores = suitPriorityOrder.map { suit ->
             val cards = levelBySuit[suit]
             if (cards != null && cards.size >= 2) {
+                val suitStrength = evaluateSuitForCallMain(handCards, suit, currentLevel)
+                suit to suitStrength
+            } else {
+                suit to 0.0
+            }
+        }.filter { it.second > 0 }
+        
+        // 选择实力最强的花色
+        val bestSuit = suitScores.maxByOrNull { it.second }
+        if (bestSuit != null) {
+            val cards = levelBySuit[bestSuit.first]
+            if (cards != null && cards.size >= 2) {
+                // 如果当前已有人叫主，评估是否值得反主
+                if (currentCallerIndex >= 0 && currentMainSuit != null) {
+                    // 如果叫主的花色实力不够强，不反主
+                    if (bestSuit.second < 15.0) {
+                        return null
+                    }
+                }
                 return cards.take(2)
             }
         }
 
         return null
+    }
+    
+    /**
+     * 评估某个花色的叫主价值
+     */
+    private fun evaluateSuitForCallMain(
+        handCards: List<Card>,
+        suit: Suit,
+        currentLevel: Rank
+    ): Double {
+        var score = 0.0
+        
+        // 该花色的牌数
+        val suitCards = handCards.filter { it.suit == suit }
+        score += suitCards.size * 3.0
+        
+        // 该花色的大牌
+        val bigCards = suitCards.filter { it.rank.order >= Rank.TEN.order }
+        score += bigCards.size * 5.0
+        
+        // 该花色的对子
+        val pairs = suitCards.groupBy { it.rank }.values.count { it.size >= 2 }
+        score += pairs * 8.0
+        
+        // 该花色的级牌
+        val levelCards = suitCards.filter { it.rank == currentLevel }
+        score += levelCards.size * 10.0
+        
+        return score
     }
 }

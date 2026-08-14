@@ -25,8 +25,19 @@ import androidx.compose.ui.unit.dp
 import com.shengji.app.data.*
 import com.shengji.app.enums.*
 import com.shengji.app.ui.components.*
+import com.shengji.app.ui.utils.rememberScreenSize
 import com.shengji.app.viewmodel.GameViewModel
 import kotlinx.coroutines.delay
+
+/**
+ * 亮牌气泡数据
+ */
+private data class CallMainBubbleData(
+    val playerIndex: Int,
+    val playerName: String,
+    val cardName: String,
+    val suitName: String
+)
 
 /**
  * 游戏主对局界面
@@ -40,6 +51,8 @@ fun GameScreen(
     val state by viewModel.state.collectAsState()
     val validationMsg by viewModel.validationMessage.collectAsState()
     val soundEvent by viewModel.soundEvent.collectAsState()
+    val selectedBottomIndices by viewModel.selectedBottomIndices.collectAsState()
+    val selectedHandIndices by viewModel.selectedHandIndices.collectAsState()
     val context = LocalContext.current
 
     // 音效管理器
@@ -75,11 +88,56 @@ fun GameScreen(
     var showExitDialog by remember { mutableStateOf(false) }
     var showCardConfirmDialog by remember { mutableStateOf<Card?>(null) }
 
-    // 监听阶段变化
-    LaunchedEffect(state.phase) {
+    val humanPlayer = remember(state.players) { state.players.getOrNull(0) }
+    val aiRight = remember(state.players) { state.players.getOrNull(1) }
+    val aiTop = remember(state.players) { state.players.getOrNull(2) }
+    val aiLeft = remember(state.players) { state.players.getOrNull(3) }
+
+    // ═══ 出牌超时提示 ═══
+    var showTurnHint by remember { mutableStateOf(false) }
+    // 监听轮到人类玩家出牌，3秒后弹出提示（换底牌阶段不提示）
+    LaunchedEffect(state.currentTurnIndex, state.isLeadPhase, state.phase, state.isBottomExchangePhase) {
+        showTurnHint = false
+        if (state.phase == GamePhase.PLAYING &&
+            state.currentTurnIndex == 0 &&
+            !state.isBottomExchangePhase &&
+            !(humanPlayer?.isAiControlled ?: false)
+        ) {
+            delay(3000)
+            // 再次检查仍然是人类的回合
+            if (state.currentTurnIndex == 0 && state.phase == GamePhase.PLAYING && !state.isBottomExchangePhase) {
+                showTurnHint = true
+            }
+        }
+    }
+
+    // ═══ 亮牌气泡提示 ═══
+    var callMainBubble by remember { mutableStateOf<CallMainBubbleData?>(null) }
+    LaunchedEffect(state.callMainDisplayCards, state.callMainDisplayPlayer) {
+        val cards = state.callMainDisplayCards
+        val player = state.callMainDisplayPlayer
+        val suit = state.callMainDisplaySuit
+        if (cards != null && player != null && suit != null) {
+            // 找到亮牌玩家的位置索引
+            val playerIndex = state.players.indexOfFirst { it.displayName == player }
+            callMainBubble = CallMainBubbleData(
+                playerIndex = playerIndex,
+                playerName = player,
+                cardName = cards.joinToString { it.displayName },
+                suitName = suit
+            )
+            delay(2500)
+            callMainBubble = null
+        } else {
+            callMainBubble = null
+        }
+    }
+
+    // 监听阶段变化（自己已亮主则不弹反主窗口）
+    LaunchedEffect(state.phase, state.currentCallerIndex) {
         when (state.phase) {
             GamePhase.CALL_MAIN -> {
-                if (state.players.isNotEmpty()) showCallMainDialog = true
+                if (state.players.isNotEmpty() && state.currentCallerIndex != 0) showCallMainDialog = true
             }
             GamePhase.GAME_OVER -> { showSettlementDialog = true }
             else -> { showCallMainDialog = false; showSettlementDialog = false }
@@ -89,52 +147,23 @@ fun GameScreen(
     // 清除选牌
     LaunchedEffect(state.phase, state.roundNumber, state.isLeadPhase, state.currentTurnIndex) {
         selectedIndices = emptySet()
+        showTurnHint = false // 轮次变化时清除超时提示
     }
 
-    val humanPlayer = state.players.getOrNull(0)
-    val aiRight = state.players.getOrNull(1)
-    val aiTop = state.players.getOrNull(2)
-    val aiLeft = state.players.getOrNull(3)
-
-    // 显示当前轮出牌，如果没有则显示上一轮出牌
-    val playsByVisual = if (state.currentRoundPlays.isNotEmpty()) {
-        state.currentRoundPlays.toMap()
-    } else {
-        state.lastRoundPlays.toMap()
+    // 显示当前轮出牌，如果没有则显示上一轮出牌（使用remember缓存）
+    val playsByVisual = remember(state.currentRoundPlays, state.lastRoundPlays) {
+        if (state.currentRoundPlays.isNotEmpty()) {
+            state.currentRoundPlays.toMap()
+        } else {
+            state.lastRoundPlays.toMap()
+        }
     }
 
-    // 屏幕适配 - 使用更合理的尺寸计算
+    // 屏幕适配 - 使用统一的尺寸管理
+    val screenSize = rememberScreenSize()
     val config = LocalConfiguration.current
     val screenWidth = config.screenWidthDp.dp
     val screenHeight = config.screenHeightDp.dp
-    val density = LocalDensity.current
-    
-    // 根据屏幕宽度和高度综合计算卡牌尺寸
-    val cardWidth = when {
-        screenWidth < 360.dp -> 32.dp  // 小屏手机
-        screenWidth < 480.dp -> 40.dp  // 普通手机
-        screenWidth < 600.dp -> 48.dp  // 大屏手机
-        screenWidth < 800.dp -> 56.dp  // 小平板
-        else -> 64.dp                   // 大平板
-    }
-    val overlap = cardWidth * 0.5f
-    
-    // 字体缩放比例（基于屏幕宽度）
-    val fontScale = when {
-        screenWidth < 360.dp -> 0.8f
-        screenWidth < 480.dp -> 1.0f
-        screenWidth < 600.dp -> 1.1f
-        screenWidth < 800.dp -> 1.2f
-        else -> 1.4f
-    }
-    
-    // 通用间距缩放
-    val spacingScale = when {
-        screenWidth < 360.dp -> 0.8f
-        screenWidth < 480.dp -> 1.0f
-        screenWidth < 600.dp -> 1.1f
-        else -> 1.2f
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -143,7 +172,7 @@ fun GameScreen(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             // ═══ 状态栏 ═══
-            GameStatusBar(state = state, onExit = { showExitDialog = true })
+            GameStatusBar(state = state, onExit = { showExitDialog = true }, screenSize = screenSize)
 
             // ═══ 主游戏区域 ═══
             Column(
@@ -157,15 +186,16 @@ fun GameScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp),
+                        .padding(vertical = screenSize.spacingSmall),
                     contentAlignment = Alignment.Center
                 ) {
                     aiTop?.let {
                         AiHandView(
                             cardCount = it.handCardCount,
                             label = "对家(2) ${it.displayName}",
-                            cardWidth = 32.dp,
-                            isCurrentTurn = state.currentTurnIndex == 2
+                            cardWidth = screenSize.aiCardWidth,
+                            isCurrentTurn = state.currentTurnIndex == 2,
+                            screenSize = screenSize
                         )
                     }
                 }
@@ -174,20 +204,22 @@ fun GameScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1f)
+                        .padding(bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // 左家
                     Box(
-                        modifier = Modifier.width(60.dp),
+                        modifier = Modifier.width(screenSize.aiHandAreaWidth),
                         contentAlignment = Alignment.Center
                     ) {
                         aiLeft?.let {
                             AiHandView(
                                 cardCount = it.handCardCount,
                                 label = "左家(3) ${it.displayName}",
-                                cardWidth = 24.dp,
-                                isCurrentTurn = state.currentTurnIndex == 3
+                                cardWidth = screenSize.aiCardWidth * 0.85f,
+                                isCurrentTurn = state.currentTurnIndex == 3,
+                                screenSize = screenSize
                             )
                         }
                     }
@@ -196,21 +228,23 @@ fun GameScreen(
                     PlayArea(
                         state = state,
                         playsByVisual = playsByVisual,
-                        cardWidth = (cardWidth * 0.8f).coerceAtMost(44.dp),
+                        cardWidth = screenSize.playAreaCardWidth,
+                        screenSize = screenSize,
                         modifier = Modifier.weight(1f)
                     )
 
                     // 右家
                     Box(
-                        modifier = Modifier.width(60.dp),
+                        modifier = Modifier.width(screenSize.aiHandAreaWidth),
                         contentAlignment = Alignment.Center
                     ) {
                         aiRight?.let {
                             AiHandView(
                                 cardCount = it.handCardCount,
                                 label = "右家(1) ${it.displayName}",
-                                cardWidth = 24.dp,
-                                isCurrentTurn = state.currentTurnIndex == 1
+                                cardWidth = screenSize.aiCardWidth * 0.85f,
+                                isCurrentTurn = state.currentTurnIndex == 1,
+                                screenSize = screenSize
                             )
                         }
                     }
@@ -219,51 +253,49 @@ fun GameScreen(
                 // ── 底牌展示区 ──
                 if (state.phase == GamePhase.DIG_BOTTOM ||
                     (state.phase >= GamePhase.ROUND_SETTLE && state.bottomCards.isNotEmpty())) {
-                    BottomCardsArea(state = state, cardWidth = cardWidth * 0.5f)
+                    BottomCardsArea(state = state, cardWidth = screenSize.bottomCardWidth)
                 }
 
-                // ── 人类玩家手牌 ──
-                humanPlayer?.let { hp ->
-                    val sortedHand = hp.sortedHand(state.currentLevel)
-                    val isAiCtrl = hp.isAiControlled
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        HandCardsRow(
-                            cards = sortedHand,
-                            selectedIndices = if (isAiCtrl) emptySet() else selectedIndices,
-                            faceUp = true,
-                            cardWidth = cardWidth,
-                            overlap = overlap,
-                            maxWidth = screenWidth - 16.dp,
-                            onCardClick = if (isAiCtrl) null else { idx ->
-                                val card = sortedHand[idx]
-                                // 换底牌阶段：点击手牌用于配对交换
-                                if (state.isBottomExchangePhase) {
-                                    viewModel.handleEvent(GameEvent.SelectForExchange(idx, false))
+                // ── 人类玩家手牌（换底牌阶段时隐藏，因为换牌界面已显示手牌）──
+                if (!state.isBottomExchangePhase) {
+                    humanPlayer?.let { hp ->
+                        val sortedHand = hp.sortedHand(state.currentLevel)
+                        val isAiCtrl = hp.isAiControlled
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            HandCardsRow(
+                                cards = sortedHand,
+                                selectedIndices = if (isAiCtrl) emptySet() else selectedIndices,
+                                faceUp = true,
+                                cardWidth = screenSize.cardWidth,
+                                overlap = screenSize.cardWidth * screenSize.cardOverlapRatio,
+                                maxWidth = screenWidth - 16.dp,
+                                onCardClick = if (isAiCtrl) null else { idx ->
+                                    val card = sortedHand[idx]
+                                    // 发牌阶段：点击级牌需要二次确认亮牌
+                                    if (state.phase == GamePhase.DEAL &&
+                                        card.rank == state.currentLevel &&
+                                        !card.isJoker
+                                    ) {
+                                        showCardConfirmDialog = card
+                                    }
+                                    // 出牌阶段：点击级牌需要二次确认亮牌
+                                    else if (state.phase == GamePhase.PLAYING &&
+                                        card.rank == state.currentLevel &&
+                                        !card.isJoker &&
+                                        state.mainSuit == null
+                                    ) {
+                                        showCardConfirmDialog = card
+                                    } else {
+                                        selectedIndices = if (idx in selectedIndices) selectedIndices - idx else selectedIndices + idx
+                                    }
                                 }
-                                // 发牌阶段：点击级牌需要二次确认亮牌
-                                else if (state.phase == GamePhase.DEAL &&
-                                    card.rank == state.currentLevel &&
-                                    !card.isJoker
-                                ) {
-                                    showCardConfirmDialog = card
-                                }
-                                // 出牌阶段：点击级牌需要二次确认亮牌
-                                else if (state.phase == GamePhase.PLAYING &&
-                                    card.rank == state.currentLevel &&
-                                    !card.isJoker &&
-                                    state.mainSuit == null
-                                ) {
-                                    showCardConfirmDialog = card
-                                } else {
-                                    selectedIndices = if (idx in selectedIndices) selectedIndices - idx else selectedIndices + idx
-                                }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
 
@@ -281,12 +313,14 @@ fun GameScreen(
                     BottomExchangeArea(
                         bottomCards = state.bottomCards,
                         handCards = humanPlayer?.sortedHand(state.currentLevel) ?: emptyList(),
-                        exchangePairs = state.exchangePairs,
+                        selectedBottomIndices = selectedBottomIndices,
+                        selectedHandIndices = selectedHandIndices,
                         onSelectCard = { idx, isBottom -> viewModel.handleEvent(GameEvent.SelectForExchange(idx, isBottom)) },
                         onConfirm = { viewModel.handleEvent(GameEvent.ConfirmBottomExchange) },
                         onCancel = { viewModel.handleEvent(GameEvent.CancelBottomExchange) },
-                        cardWidth = cardWidth * 0.6f,
-                        modifier = Modifier.padding(vertical = 4.dp)
+                        cardWidth = screenSize.exchangeCardWidth,
+                        screenSize = screenSize,
+                        modifier = Modifier.padding(vertical = screenSize.spacingSmall)
                     )
                 }
             }
@@ -297,32 +331,36 @@ fun GameScreen(
                     cards = cards,
                     playerName = state.callMainDisplayPlayer ?: "",
                     suitName = state.callMainDisplaySuit ?: "",
-                    cardWidth = cardWidth * 0.8f
+                    cardWidth = screenSize.callMainCardWidth,
+                    screenSize = screenSize
                 )
             }
 
-            // ═══ 操作按钮区 ═══
-            GameActionButtons(
-                state = state,
-                selectedIndices = selectedIndices,
-                humanPlayer = humanPlayer,
-                onDeal = { viewModel.handleEvent(GameEvent.Deal) },
-                onLeadPlay = { cards -> viewModel.handleEvent(GameEvent.LeadPlay(cards)) },
-                onFollowPlay = { cards -> viewModel.handleEvent(GameEvent.FollowPlay(cards)) },
-                onConfirmDigBottom = { viewModel.handleEvent(GameEvent.ConfirmDigBottom) },
-                onConfirmSettle = {
-                    showSettlementDialog = false
-                    viewModel.handleEvent(GameEvent.ConfirmSettle)
-                },
-                onRestart = {
-                    showSettlementDialog = false
-                    viewModel.handleEvent(GameEvent.Restart)
-                },
-                onDeselect = { selectedIndices = emptySet() },
-                onToggleAiControl = { viewModel.handleEvent(GameEvent.ToggleAiControl) },
-                isAiControlled = humanPlayer?.isAiControlled ?: false,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-            )
+            // ═══ 操作按钮区（换底牌阶段隐藏，避免挤占换牌按钮空间） ═══
+            if (!state.isBottomExchangePhase) {
+                GameActionButtons(
+                    state = state,
+                    selectedIndices = selectedIndices,
+                    humanPlayer = humanPlayer,
+                    onDeal = { viewModel.handleEvent(GameEvent.Deal) },
+                    onLeadPlay = { cards -> viewModel.handleEvent(GameEvent.LeadPlay(cards)) },
+                    onFollowPlay = { cards -> viewModel.handleEvent(GameEvent.FollowPlay(cards)) },
+                    onConfirmDigBottom = { viewModel.handleEvent(GameEvent.ConfirmDigBottom) },
+                    onConfirmSettle = {
+                        showSettlementDialog = false
+                        viewModel.handleEvent(GameEvent.ConfirmSettle)
+                    },
+                    onRestart = {
+                        showSettlementDialog = false
+                        viewModel.handleEvent(GameEvent.Restart)
+                    },
+                    onDeselect = { selectedIndices = emptySet() },
+                    onToggleAiControl = { viewModel.handleEvent(GameEvent.ToggleAiControl) },
+                    isAiControlled = humanPlayer?.isAiControlled ?: false,
+                    screenSize = screenSize,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = screenSize.spacingMedium)
+                )
+            }
         }
 
         // ═══ 中央牌堆（发牌阶段） ═══
@@ -334,7 +372,7 @@ fun GameScreen(
                 CentralDeckView(
                     remainingCards = state.totalCardsToDeal - state.dealingCardIndex,
                     totalCards = state.totalCardsToDeal,
-                    cardWidth = cardWidth * 0.5f
+                    cardWidth = screenSize.centralDeckCardWidth
                 )
             }
         }
@@ -344,60 +382,148 @@ fun GameScreen(
             DealingFlyingCard(
                 targetPlayerIndex = state.dealingTargetPlayerIndex,
                 card = state.dealingCurrentCard,
-                cardWidth = cardWidth * 0.65f,
+                cardWidth = screenSize.flyingCardWidth,
                 screenWidth = screenWidth,
                 screenHeight = screenHeight
             )
         }
 
-        // ═══ 错误提示弹窗（顶部） ═══
-        errorMessage?.let { msg ->
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .align(Alignment.TopCenter),
-                contentAlignment = Alignment.Center
-            ) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    ),
-                    shape = MaterialTheme.shapes.medium
+        // ═══ 错误提示弹窗（顶部，带动画） ═══
+        AnimatedVisibility(
+            visible = errorMessage != null,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            errorMessage?.let { msg ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = msg,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        textAlign = TextAlign.Center
-                    )
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        ),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            text = msg,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
         }
 
-        // ═══ 轮次过渡提示（顶部） ═══
-        state.roundTransitionMessage?.let { msg ->
+        // ═══ 轮次过渡提示（顶部，带动画） ═══
+        AnimatedVisibility(
+            visible = state.roundTransitionMessage != null,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            state.roundTransitionMessage?.let { msg ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        ),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(
+                            text = msg,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+
+        // ═══ 出牌超时提示（轮到玩家3秒未出牌） ═══
+        AnimatedVisibility(
+            visible = showTurnHint,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            Card(
+                modifier = Modifier.padding(top = 60.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFFFF3E0)
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = "⏰ 轮到你出牌了",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFE65100)
+                )
+            }
+        }
+
+        // ═══ 亮牌气泡提示（从亮牌玩家位置弹出） ═══
+        callMainBubble?.let { bubble ->
+            val bubbleAlignment = when (bubble.playerIndex) {
+                0 -> Alignment.BottomCenter
+                1 -> Alignment.CenterEnd
+                2 -> Alignment.TopCenter
+                3 -> Alignment.CenterStart
+                else -> Alignment.Center
+            }
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .align(Alignment.TopCenter),
-                contentAlignment = Alignment.Center
+                    .fillMaxSize()
+                    .padding(
+                        bottom = if (bubble.playerIndex == 0) 120.dp else 0.dp,
+                        top = if (bubble.playerIndex == 2) 60.dp else 0.dp,
+                        end = if (bubble.playerIndex == 1) 70.dp else 0.dp,
+                        start = if (bubble.playerIndex == 3) 70.dp else 0.dp
+                    ),
+                contentAlignment = bubbleAlignment
             ) {
                 Card(
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                        containerColor = Color(0xFFE3F2FD)
                     ),
-                    shape = MaterialTheme.shapes.medium
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
-                    Text(
-                        text = msg,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        textAlign = TextAlign.Center
-                    )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "🃏 亮主",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF1565C0)
+                        )
+                        Text(
+                            text = "${bubble.cardName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${bubble.suitName}为主",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF1976D2)
+                        )
+                    }
                 }
             }
         }
@@ -509,71 +635,116 @@ fun GameScreen(
 // ═══════════════════════════════════════════
 
 @Composable
-private fun GameStatusBar(state: GameState, onExit: () -> Unit) {
+private fun GameStatusBar(state: GameState, onExit: () -> Unit, screenSize: com.shengji.app.ui.utils.ScreenSize) {
+    // 缓存常用值
+    val currentLevelDisplay = remember(state.currentLevel) { state.currentLevel.display }
+    val mainSuitDisplay = remember(state.mainSuit) { state.mainSuit?.displayName ?: "无主" }
+    val isRedSuit = remember(state.mainSuit) {
+        state.mainSuit == Suit.HEART || state.mainSuit == Suit.DIAMOND
+    }
+    val mainSuitColor = if (isRedSuit) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary
+    val roundNumberText = remember(state.roundNumber) { "${state.roundNumber}" }
+    val team0Score = remember(state.teamScores) { "${state.teamScores.getOrElse(0) { 0 }}" }
+    val team1Score = remember(state.teamScores) { "${state.teamScores.getOrElse(1) { 0 }}" }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant)
-            .statusBarsPadding() // 避开手机状态栏
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .statusBarsPadding()
+            .padding(horizontal = screenSize.spacingMedium, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         TextButton(
             onClick = onExit,
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            contentPadding = PaddingValues(horizontal = screenSize.chipPaddingHorizontal, vertical = 0.dp)
         ) {
-            Text("← 退出", style = MaterialTheme.typography.bodySmall)
+            Text("← 退出", style = MaterialTheme.typography.bodySmall.copy(fontSize = screenSize.statusTextSize))
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
-
-        InfoChip(label = "级牌", value = state.currentLevel.display)
-
-        Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(screenSize.chipSpacing))
 
         InfoChip(
-            label = "主花色",
-            value = state.mainSuit?.displayName ?: "无主",
-            valueColor = if (state.mainSuit == Suit.HEART || state.mainSuit == Suit.DIAMOND)
-                Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary
+            label = "级",
+            value = currentLevelDisplay,
+            screenSize = screenSize
+        )
+
+        Spacer(modifier = Modifier.width(screenSize.chipSpacing))
+
+        InfoChip(
+            label = "主",
+            value = mainSuitDisplay,
+            valueColor = mainSuitColor,
+            screenSize = screenSize
         )
 
         Spacer(modifier = Modifier.weight(1f))
 
-        InfoChip(label = "轮次", value = "${state.roundNumber}")
+        InfoChip(
+            label = "轮",
+            value = roundNumberText,
+            screenSize = screenSize
+        )
 
-        Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(screenSize.chipSpacing))
 
-        InfoChip(label = "A队", value = "${state.teamScores.getOrElse(0) { 0 }}")
+        InfoChip(
+            label = "A",
+            value = team0Score,
+            screenSize = screenSize
+        )
 
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(screenSize.chipSpacing))
 
-        InfoChip(label = "B队", value = "${state.teamScores.getOrElse(1) { 0 }}")
+        InfoChip(
+            label = "B",
+            value = team1Score,
+            screenSize = screenSize
+        )
     }
 }
 
 @Composable
-private fun PlayArea(
+internal fun PlayArea(
     state: GameState,
     playsByVisual: Map<Int, List<Card>>,
     cardWidth: Dp = 40.dp,
+    screenSize: com.shengji.app.ui.utils.ScreenSize,
     modifier: Modifier = Modifier
 ) {
+    // 缓存当前轮出牌数据
+    val player0Cards = remember(playsByVisual) { playsByVisual[0] ?: emptyList() }
+    val player1Cards = remember(playsByVisual) { playsByVisual[1] ?: emptyList() }
+    val player2Cards = remember(playsByVisual) { playsByVisual[2] ?: emptyList() }
+    val player3Cards = remember(playsByVisual) { playsByVisual[3] ?: emptyList() }
+
+    // 缓存牌型名称
+    val comboName = remember(state.currentLeadCombo) {
+        when (state.currentLeadCombo?.comboType) {
+            ComboType.SINGLE -> "单张"
+            ComboType.PAIR -> "对子"
+            ComboType.TRACTOR -> "拖拉机"
+            ComboType.SLINGSHOT -> "甩牌"
+            else -> ""
+        }
+    }
+
     Column(
-        modifier = modifier.padding(4.dp),
+        modifier = modifier.padding(screenSize.spacingSmall),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         // 对家出牌（上方）- 玩家2
         PlayAreaSlot(
             label = "对家(2)",
-            cards = playsByVisual[2] ?: emptyList(),
+            cards = player2Cards,
             cardWidth = cardWidth,
-            layout = PlayAreaLayout.HORIZONTAL,
-            isCurrentTurn = state.currentTurnIndex == 2
+            isCurrentTurn = state.currentTurnIndex == 2,
+            screenSize = screenSize
         )
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingSmall))
 
         // 中间行：左家 + 信息 + 右家
         Row(
@@ -584,68 +755,60 @@ private fun PlayArea(
             // 左家出牌（左侧）- 玩家3
             PlayAreaSlot(
                 label = "左家(3)",
-                cards = playsByVisual[3] ?: emptyList(),
+                cards = player3Cards,
                 cardWidth = cardWidth,
-                layout = PlayAreaLayout.HORIZONTAL,
-                isCurrentTurn = state.currentTurnIndex == 3
+                isCurrentTurn = state.currentTurnIndex == 3,
+                screenSize = screenSize
             )
 
             // 中间信息
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.width(50.dp)
+                modifier = Modifier.width(screenSize.playAreaInfoWidth)
             ) {
                 if (state.phase == GamePhase.PLAYING) {
                     Text(
                         text = if (state.isLeadPhase) "首出" else "跟牌",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = screenSize.labelTextSize),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    if (state.currentLeadCombo != null) {
-                        val comboName = when (state.currentLeadCombo!!.comboType) {
-                            ComboType.SINGLE -> "单张"
-                            ComboType.PAIR -> "对子"
-                            ComboType.TRACTOR -> "拖拉机"
-                            ComboType.SLINGSHOT -> "甩牌"
-                            else -> ""
-                        }
+                    if (comboName.isNotEmpty()) {
                         Text(
                             text = comboName,
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = screenSize.labelTextSize),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 } else if (state.phase == GamePhase.DIG_BOTTOM) {
                     Text(
                         text = "抠底",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = screenSize.labelTextSize),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
 
-            // 右家出牌（右侧）
             // 右家出牌（右侧）- 玩家1
             PlayAreaSlot(
                 label = "右家(1)",
-                cards = playsByVisual[1] ?: emptyList(),
+                cards = player1Cards,
                 cardWidth = cardWidth,
-                layout = PlayAreaLayout.HORIZONTAL,
-                isCurrentTurn = state.currentTurnIndex == 1
+                isCurrentTurn = state.currentTurnIndex == 1,
+                screenSize = screenSize
             )
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingSmall))
 
         // 自己出牌（下方）- 玩家0
         PlayAreaSlot(
             label = "你(0)",
-            cards = playsByVisual[0] ?: emptyList(),
+            cards = player0Cards,
             cardWidth = cardWidth,
-            layout = PlayAreaLayout.HORIZONTAL,
-            isCurrentTurn = state.currentTurnIndex == 0
+            isCurrentTurn = state.currentTurnIndex == 0,
+            screenSize = screenSize
         )
     }
 }
@@ -655,44 +818,50 @@ enum class PlayAreaLayout {
 }
 
 @Composable
-private fun PlayAreaSlot(
+internal fun PlayAreaSlot(
     label: String,
     cards: List<Card>,
     cardWidth: Dp = 40.dp,
-    layout: PlayAreaLayout = PlayAreaLayout.HORIZONTAL,
-    isCurrentTurn: Boolean = false
+    isCurrentTurn: Boolean = false,
+    screenSize: com.shengji.app.ui.utils.ScreenSize
 ) {
+    // 缓存尺寸计算
+    val emptyBoxWidth = remember(cardWidth) { cardWidth * 1.5f }
+    val emptyBoxHeight = remember(cardWidth) { cardWidth * 1.2f }
+    val cardOverlap = remember(cardWidth) { cardWidth * 0.4f }
+    val hasCards = remember(cards) { cards.isNotEmpty() }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = screenSize.labelTextSize),
             fontWeight = if (isCurrentTurn) FontWeight.Bold else FontWeight.Normal,
             color = if (isCurrentTurn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.height(2.dp))
         AnimatedVisibility(
-            visible = cards.isNotEmpty(),
+            visible = hasCards,
             enter = fadeIn(animationSpec = tween(200)) + scaleIn(
                 initialScale = 0.8f,
                 animationSpec = tween(200, easing = FastOutSlowInEasing)
             )
         ) {
-            if (cards.isNotEmpty()) {
+            if (hasCards) {
                 HandCardsRow(
                     cards = cards,
                     faceUp = true,
                     cardWidth = cardWidth,
-                    overlap = cardWidth * 0.4f
+                    overlap = cardOverlap
                 )
             }
         }
-        if (cards.isEmpty()) {
+        if (!hasCards) {
             Box(
                 modifier = Modifier
-                    .width(cardWidth * 1.5f)
-                    .height(cardWidth * 1.2f)
+                    .width(emptyBoxWidth)
+                    .height(emptyBoxHeight)
                     .background(
                         if (isCurrentTurn) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -712,7 +881,11 @@ private fun PlayAreaSlot(
 }
 
 @Composable
-private fun BottomCardsArea(state: GameState, cardWidth: Dp = 32.dp) {
+internal fun BottomCardsArea(state: GameState, cardWidth: Dp = 32.dp) {
+    // 缓存底牌数量文本
+    val bottomCardsText = remember(state.bottomCards.size) { "底牌（${state.bottomCards.size}张）" }
+    val spacerWidth = remember { 2.dp }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -720,7 +893,7 @@ private fun BottomCardsArea(state: GameState, cardWidth: Dp = 32.dp) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "底牌（${state.bottomCards.size}张）",
+            text = bottomCardsText,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -728,26 +901,28 @@ private fun BottomCardsArea(state: GameState, cardWidth: Dp = 32.dp) {
         Row(horizontalArrangement = Arrangement.Center) {
             state.bottomCards.forEach { card ->
                 CardView(card = card, faceUp = state.isBottomDug, width = cardWidth)
-                Spacer(modifier = Modifier.width(2.dp))
+                Spacer(modifier = Modifier.width(spacerWidth))
             }
         }
     }
 }
 
 @Composable
-private fun BottomExchangeArea(
+internal fun BottomExchangeArea(
     bottomCards: List<Card>,
     handCards: List<Card>,
-    exchangePairs: Map<Int, Int>,
+    selectedBottomIndices: List<Int>,
+    selectedHandIndices: List<Int>,
     onSelectCard: (Int, Boolean) -> Unit,
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
     cardWidth: Dp = 32.dp,
+    screenSize: com.shengji.app.ui.utils.ScreenSize,
     modifier: Modifier = Modifier
 ) {
-    val completedPairs = exchangePairs.filter { it.value >= 0 }
-    val pendingBottomIndex = exchangePairs.entries.find { it.value == -1 }?.key
-    val pairedHandIndices = completedPairs.values.toSet()
+    val selectedBottomCount = selectedBottomIndices.size
+    val selectedHandCount = selectedHandIndices.size
+    val canConfirm = selectedBottomCount > 0 && selectedBottomCount == selectedHandCount
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -755,97 +930,89 @@ private fun BottomExchangeArea(
     ) {
         // 底牌选择区域
         Text(
-            text = if (pendingBottomIndex != null) "请点击手牌与底牌配对" else "点击底牌开始配对交换（已配对 ${completedPairs.size} 对）",
-            style = MaterialTheme.typography.labelMedium,
+            text = "选择底牌（已选 $selectedBottomCount 张）",
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize),
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingSmall))
 
-        // 底牌展示（可点击选择/配对）
+        // 底牌展示（可点击选择）
         Row(horizontalArrangement = Arrangement.Center) {
             bottomCards.forEachIndexed { index, card ->
-                val isPaired = index in completedPairs
-                val isPending = index == pendingBottomIndex
-                Box(
-                    modifier = Modifier
-                        .padding(2.dp)
-                        .then(
-                            when {
-                                isPending -> Modifier.border(
-                                    width = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                                isPaired -> Modifier.border(
-                                    width = 2.dp,
-                                    color = MaterialTheme.colorScheme.tertiary,
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                                else -> Modifier
-                            }
-                        )
-                        .clickable { onSelectCard(index, true) }
-                ) {
-                    CardView(card = card, faceUp = true, width = cardWidth)
-                }
+                val isSelected = index in selectedBottomIndices
+                CardView(
+                    card = card,
+                    faceUp = true,
+                    width = cardWidth,
+                    selected = isSelected,
+                    onClick = { onSelectCard(index, true) }
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingSmall))
 
-        // 手牌选择区域
+        // 手牌选择区域 - 使用固定高度+垂直滚动
         Text(
-            text = "选择手牌交换（已配对 ${completedPairs.size} 张）",
-            style = MaterialTheme.typography.labelMedium,
+            text = "选择手牌（已选 $selectedHandCount 张）",
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize),
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingSmall))
 
-        // 手牌展示（可滚动，显示全部手牌）
-        Row(
-            horizontalArrangement = Arrangement.Center,
+        // 手牌展示（可水平滚动，限制最大高度）
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
+                .heightIn(max = screenSize.cardWidth * 2.2f) // 限制最大高度
+                .horizontalScroll(rememberScrollState()),
+            contentAlignment = Alignment.Center
         ) {
-            handCards.forEachIndexed { index, card ->
-                val isPaired = index in pairedHandIndices
-                Box(
-                    modifier = Modifier
-                        .padding(1.dp)
-                        .then(
-                            if (isPaired) {
-                                Modifier.border(
-                                    width = 2.dp,
-                                    color = MaterialTheme.colorScheme.tertiary,
-                                    shape = RoundedCornerShape(4.dp)
-                                )
-                            } else {
-                                Modifier
-                            }
-                        )
-                        .clickable { onSelectCard(index, false) }
-                ) {
-                    CardView(card = card, faceUp = true, width = cardWidth * 0.8f)
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                handCards.forEachIndexed { index, card ->
+                    val isSelected = index in selectedHandIndices
+                    CardView(
+                        card = card,
+                        faceUp = true,
+                        width = cardWidth * 0.75f,
+                        selected = isSelected,
+                        onClick = { onSelectCard(index, false) }
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingMedium))
 
         // 操作按钮
         Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(screenSize.spacingLarge)
         ) {
-            OutlinedButton(onClick = onCancel) {
-                Text("不换")
+            OutlinedButton(
+                onClick = onCancel,
+                contentPadding = PaddingValues(
+                    horizontal = screenSize.buttonPaddingHorizontal,
+                    vertical = screenSize.buttonPaddingVertical
+                )
+            ) {
+                Text("不换", style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize))
             }
             Button(
                 onClick = onConfirm,
-                enabled = pendingBottomIndex == null
+                enabled = canConfirm || selectedBottomCount == 0,
+                contentPadding = PaddingValues(
+                    horizontal = screenSize.buttonPaddingHorizontal,
+                    vertical = screenSize.buttonPaddingVertical
+                )
             ) {
-                Text("确认换 ${completedPairs.size} 对")
+                Text(
+                    if (canConfirm) "确认换 $selectedBottomCount 张" else "跳过换牌",
+                    style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize)
+                )
             }
         }
     }
@@ -856,43 +1023,49 @@ private fun CallMainDisplayOverlay(
     cards: List<Card>,
     playerName: String,
     suitName: String,
-    cardWidth: Dp = 32.dp
+    cardWidth: Dp = 32.dp,
+    screenSize: com.shengji.app.ui.utils.ScreenSize
 ) {
+    // 缓存文本
+    val titleText = remember(playerName) { "$playerName 亮主" }
+    val suitText = remember(suitName) { "主花色: $suitName" }
+    val cardShape = remember { RoundedCornerShape(12.dp) }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 32.dp, vertical = 4.dp),
+            .padding(horizontal = screenSize.spacingLarge * 2, vertical = screenSize.spacingSmall),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer
         ),
-        shape = RoundedCornerShape(12.dp)
+        shape = cardShape
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(screenSize.spacingLarge),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "$playerName 亮主",
-                style = MaterialTheme.typography.titleMedium,
+                text = titleText,
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = screenSize.titleTextSize),
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(screenSize.spacingSmall))
             Row(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 cards.forEach { card ->
                     CardView(card = card, faceUp = true, width = cardWidth)
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(screenSize.spacingSmall))
                 }
             }
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(screenSize.spacingSmall))
             Text(
-                text = "主花色: $suitName",
-                style = MaterialTheme.typography.labelLarge,
+                text = suitText,
+                style = MaterialTheme.typography.labelLarge.copy(fontSize = screenSize.scoreTextSize),
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
         }
@@ -913,12 +1086,26 @@ private fun GameActionButtons(
     onDeselect: () -> Unit,
     onToggleAiControl: () -> Unit,
     isAiControlled: Boolean,
+    screenSize: com.shengji.app.ui.utils.ScreenSize,
     modifier: Modifier = Modifier
 ) {
-    val selectedCards = humanPlayer?.let { hp ->
-        val hand = hp.sortedHand(state.currentLevel)
-        selectedIndices.filter { it in hand.indices }.map { hand[it] }
-    } ?: emptyList()
+    // 缓存选中的牌
+    val selectedCards = remember(humanPlayer, selectedIndices, state.currentLevel) {
+        humanPlayer?.let { hp ->
+            val hand = hp.sortedHand(state.currentLevel)
+            selectedIndices.filter { it in hand.indices }.map { hand[it] }
+        } ?: emptyList()
+    }
+
+    // 缓存常用值
+    val isHumanTurn = remember(state.currentTurnIndex) { state.currentTurnIndex == 0 }
+    val hasSelectedCards = remember(selectedCards) { selectedCards.isNotEmpty() }
+    val horizontalPadding8 = remember {
+        PaddingValues(horizontal = screenSize.buttonPaddingHorizontal * 0.67f, vertical = screenSize.buttonPaddingVertical)
+    }
+    val horizontalPadding12 = remember {
+        PaddingValues(horizontal = screenSize.buttonPaddingHorizontal, vertical = screenSize.buttonPaddingVertical)
+    }
 
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -929,9 +1116,9 @@ private fun GameActionButtons(
             GamePhase.IDLE -> {
                 Button(
                     onClick = onDeal,
-                    modifier = Modifier.height(48.dp)
+                    modifier = Modifier.height(screenSize.buttonHeightLarge)
                 ) {
-                    Text("🃏 开始游戏", style = MaterialTheme.typography.titleMedium)
+                    Text("🃏 开始游戏", style = MaterialTheme.typography.titleMedium.copy(fontSize = screenSize.titleTextSize))
                 }
             }
 
@@ -941,14 +1128,14 @@ private fun GameActionButtons(
                 ) {
                     Text(
                         text = if (state.mainSuit != null) "已叫主·等反主" else "发牌中·点级牌亮主",
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = screenSize.buttonTextSize),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (state.mainSuit != null) {
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(screenSize.spacingSmall))
                         Text(
                             text = "主: ${state.mainSuit!!.displayName}",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.scoreTextSize),
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -958,7 +1145,7 @@ private fun GameActionButtons(
             GamePhase.CALL_MAIN -> {
                 Text(
                     text = "可反主或跳过",
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = screenSize.buttonTextSize),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -968,17 +1155,15 @@ private fun GameActionButtons(
                 if (state.isBottomExchangePhase) {
                     Text(
                         text = "选择底牌和手牌进行交换",
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = screenSize.buttonTextSize),
                         color = MaterialTheme.colorScheme.primary
                     )
                 } else {
-                    val isHumanTurn = state.currentTurnIndex == 0
-
                     // 托管按钮
                     OutlinedButton(
                         onClick = onToggleAiControl,
-                        modifier = Modifier.padding(end = 4.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(end = screenSize.spacingSmall),
+                        contentPadding = horizontalPadding8,
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = if (isAiControlled)
                                 MaterialTheme.colorScheme.error
@@ -987,45 +1172,60 @@ private fun GameActionButtons(
                         )
                     ) {
                         Text(
-                            text = if (isAiControlled) "托管中" else "自己玩",
-                            style = MaterialTheme.typography.labelMedium
+                            text = if (isAiControlled) "托管中" else "电脑代打",
+                            style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize)
                         )
                     }
 
                     if (isAiControlled) {
                         Text(
                             text = "AI代打中",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = screenSize.statusTextSize),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    } else if (selectedCards.isNotEmpty()) {
+                    } else if (hasSelectedCards) {
                         OutlinedButton(
                             onClick = onDeselect,
-                            modifier = Modifier.padding(end = 4.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(end = screenSize.spacingSmall),
+                            contentPadding = horizontalPadding8
                         ) {
-                            Text("取消", style = MaterialTheme.typography.labelMedium)
+                            Text("取消", style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize))
                         }
                         Button(
                             onClick = {
                                 if (state.isLeadPhase) onLeadPlay(selectedCards) else onFollowPlay(selectedCards)
                             },
                             enabled = isHumanTurn,
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            contentPadding = horizontalPadding12
                         ) {
                             Text(
                                 text = if (state.isLeadPhase) "出牌" else "跟牌",
-                                style = MaterialTheme.typography.labelMedium
+                                style = MaterialTheme.typography.labelMedium.copy(fontSize = screenSize.labelTextSize)
                             )
                         }
                     } else {
-                        Text(
-                            text = if (isHumanTurn) {
-                                if (state.isLeadPhase) "选牌出牌" else "选牌跟牌"
-                            } else "等待...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        // 轮次提示 - 当前回合时高亮显示
+                        val turnText = if (isHumanTurn) {
+                            if (state.isLeadPhase) "👆 选牌出牌" else "👆 选牌跟牌"
+                        } else "等待..."
+                        val turnColor = if (isHumanTurn) MaterialTheme.colorScheme.primary
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isHumanTurn)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = turnText,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = screenSize.statusTextSize),
+                                fontWeight = if (isHumanTurn) FontWeight.Bold else FontWeight.Normal,
+                                color = turnColor
+                            )
+                        }
                     }
                 }
             }
@@ -1033,30 +1233,30 @@ private fun GameActionButtons(
             GamePhase.DIG_BOTTOM -> {
                 Button(
                     onClick = onConfirmDigBottom,
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    modifier = Modifier.height(screenSize.buttonHeightMedium),
+                    contentPadding = horizontalPadding12
                 ) {
-                    Text("抠底", style = MaterialTheme.typography.labelLarge)
+                    Text("抠底", style = MaterialTheme.typography.labelLarge.copy(fontSize = screenSize.buttonTextSize))
                 }
             }
 
             GamePhase.ROUND_SETTLE -> {
                 Button(
                     onClick = onConfirmSettle,
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    modifier = Modifier.height(screenSize.buttonHeightMedium),
+                    contentPadding = horizontalPadding12
                 ) {
-                    Text("继续", style = MaterialTheme.typography.labelLarge)
+                    Text("继续", style = MaterialTheme.typography.labelLarge.copy(fontSize = screenSize.buttonTextSize))
                 }
             }
 
             GamePhase.GAME_OVER -> {
                 Button(
                     onClick = onRestart,
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    modifier = Modifier.height(screenSize.buttonHeightMedium),
+                    contentPadding = horizontalPadding12
                 ) {
-                    Text("再来一局", style = MaterialTheme.typography.labelLarge)
+                    Text("再来一局", style = MaterialTheme.typography.labelLarge.copy(fontSize = screenSize.buttonTextSize))
                 }
             }
         }
@@ -1069,12 +1269,16 @@ private fun DealingProgressBar(
     total: Int,
     modifier: Modifier = Modifier
 ) {
+    // 缓存进度文本
+    val progressText = remember(current, total) { "发牌进度: $current / $total" }
+    val progressValue = remember(current, total) { current.toFloat() / total.toFloat() }
+
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         LinearProgressIndicator(
-            progress = { current.toFloat() / total.toFloat() },
+            progress = { progressValue },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(4.dp),
@@ -1083,7 +1287,7 @@ private fun DealingProgressBar(
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
-            text = "发牌进度: $current / $total",
+            text = progressText,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1103,7 +1307,11 @@ private fun CentralDeckView(
     totalCards: Int,
     cardWidth: Dp = 40.dp
 ) {
-    val stackCount = ((remainingCards.toFloat() / totalCards) * 6).toInt().coerceIn(1, 6)
+    // 缓存堆叠层数计算
+    val stackCount = remember(remainingCards, totalCards) {
+        ((remainingCards.toFloat() / totalCards) * 6).toInt().coerceIn(1, 6)
+    }
+
     Box(contentAlignment = Alignment.Center) {
         repeat(stackCount) { i ->
             Box(
@@ -1139,21 +1347,29 @@ private fun DealingFlyingCard(
         )
     }
 
-    val targetOffsetX = when (targetPlayerIndex) {
-        1 -> screenWidth * 0.32f
-        3 -> -screenWidth * 0.32f
-        else -> 0.dp
+    // 缓存目标偏移计算
+    val targetOffsetX = remember(targetPlayerIndex, screenWidth) {
+        when (targetPlayerIndex) {
+            1 -> screenWidth * 0.32f
+            3 -> -screenWidth * 0.32f
+            else -> 0.dp
+        }
     }
-    val targetOffsetY = when (targetPlayerIndex) {
-        0 -> screenHeight * 0.32f
-        2 -> -screenHeight * 0.32f
-        else -> 0.dp
+    val targetOffsetY = remember(targetPlayerIndex, screenHeight) {
+        when (targetPlayerIndex) {
+            0 -> screenHeight * 0.32f
+            2 -> -screenHeight * 0.32f
+            else -> 0.dp
+        }
     }
 
     val currentX = targetOffsetX * progress.value
     val currentY = targetOffsetY * progress.value
     val scale = 0.7f + 0.3f * progress.value
     val alpha = 0.5f + 0.5f * progress.value
+
+    // 缓存是否显示牌面
+    val faceUp = remember(targetPlayerIndex, card) { targetPlayerIndex == 0 && card != null }
 
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -1170,7 +1386,7 @@ private fun DealingFlyingCard(
         ) {
             CardView(
                 card = card,
-                faceUp = targetPlayerIndex == 0 && card != null,
+                faceUp = faceUp,
                 width = cardWidth
             )
         }

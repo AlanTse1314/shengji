@@ -2,7 +2,11 @@ package com.shengji.app.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.shengji.app.data.*
+import com.shengji.app.db.GameProgressDao
+import com.shengji.app.db.GameProgressEntity
 import com.shengji.app.enums.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +36,12 @@ class GameViewModel : ViewModel() {
     private val _soundEvent = MutableStateFlow<SoundEvent?>(null)
     val soundEvent: StateFlow<SoundEvent?> = _soundEvent.asStateFlow()
 
+    private val _hasSavedProgress = MutableStateFlow(false)
+    val hasSavedProgress: StateFlow<Boolean> = _hasSavedProgress.asStateFlow()
+
+    private val gson = Gson()
+    private var progressDao: GameProgressDao? = null
+
     var logCallback: ((String) -> Unit)? = null
     var onGameOver: (suspend (startTime: Long, winnerTeam: Int, finalLevel: String, team0Score: Int, team1Score: Int) -> Unit)? = null
 
@@ -46,6 +56,17 @@ class GameViewModel : ViewModel() {
 
     fun clearValidationMessage() { _validationMessage.value = null }
     fun clearSoundEvent() { _soundEvent.value = null }
+
+    /**
+     * 设置数据库DAO（在Application初始化时调用）
+     */
+    fun setProgressDao(dao: GameProgressDao) {
+        progressDao = dao
+        // 检查是否有保存的进度
+        viewModelScope.launch {
+            _hasSavedProgress.value = dao.hasProgress() > 0
+        }
+    }
 
     fun handleEvent(event: GameEvent) {
         when (event) {
@@ -120,7 +141,7 @@ class GameViewModel : ViewModel() {
                     dealingCurrentCard = card
                 )
 
-                delay(180) // 缩短动画间隔
+                delay(150) // 发牌动画间隔
 
                 // 清除飞牌状态
                 _state.value = _state.value.copy(
@@ -196,11 +217,12 @@ class GameViewModel : ViewModel() {
         val playerName = state.players.getOrNull(0)?.displayName ?: "你"
         _state.value = state.copy(
             mainSuit = currentMainSuit,
+            currentCallerIndex = 0,
             callMainDisplayCards = listOf(card),
             callMainDisplayPlayer = playerName,
             callMainDisplaySuit = card.suit.displayName
         )
-        _validationMessage.value = "你亮了 ${card.displayName}，${card.suit.displayName} 为主"
+        // 只在上方弹窗展示，不显示底部提示
         log("  你亮牌: ${card.displayName} → ${card.suit.displayName} 为主")
 
         // 缩短展示时间
@@ -227,6 +249,7 @@ class GameViewModel : ViewModel() {
         val playerName = _state.value.players.getOrNull(playerIndex)?.displayName ?: "AI"
         _state.value = _state.value.copy(
             mainSuit = currentMainSuit,
+            currentCallerIndex = playerIndex,
             callMainDisplayCards = listOf(card),
             callMainDisplayPlayer = playerName,
             callMainDisplaySuit = card.suit.displayName
@@ -269,6 +292,7 @@ class GameViewModel : ViewModel() {
                         // 展示亮主牌
                         _state.value = _state.value.copy(
                             mainSuit = currentMainSuit,
+                            currentCallerIndex = i,
                             callMainDisplayCards = aiCards,
                             callMainDisplayPlayer = playerName,
                             callMainDisplaySuit = suitName
@@ -287,11 +311,17 @@ class GameViewModel : ViewModel() {
                     }
                 }
             }
-            _state.value = _state.value.copy(mainSuit = currentMainSuit)
+            _state.value = _state.value.copy(mainSuit = currentMainSuit, currentCallerIndex = currentCallerIndex)
         }
     }
 
     private fun handleCallMain(cards: List<Card>) {
+        // 自己亮的主自己不能反主
+        if (currentCallerIndex == 0) {
+            _validationMessage.value = "你已亮主，不能反自己"
+            _soundEvent.value = SoundEvent.Invalid
+            return
+        }
         val result = CallMainUseCase.tryCallMain(
             cards, 0, _state.value.currentLevel, currentMainSuit, currentCallerIndex
         )
@@ -304,6 +334,7 @@ class GameViewModel : ViewModel() {
             // 展示亮主牌
             _state.value = _state.value.copy(
                 mainSuit = currentMainSuit,
+                currentCallerIndex = 0,
                 callMainDisplayCards = cards,
                 callMainDisplayPlayer = playerName,
                 callMainDisplaySuit = suitName
@@ -391,7 +422,7 @@ class GameViewModel : ViewModel() {
                     dealingCurrentCard = card
                 )
 
-                delay(180) // 缩短动画间隔
+                delay(150) // 发牌动画间隔
 
                 // 清除飞牌状态
                 _state.value = _state.value.copy(
@@ -504,10 +535,11 @@ class GameViewModel : ViewModel() {
     }
 
     /**
-     * AI 庄家换底牌策略：
+     * AI 庄家换底牌策略（增强版）：
      * - 优先把副牌中的小牌（非分牌）与底牌中的分牌交换
      * - 其次把副牌中的小牌与底牌中的大牌交换
      * - 如果底牌有主牌，优先拿到手中
+     * - 考虑花色控制力，优先交换弱势花色的牌
      */
     private fun aiExchangeBottomCards(
         hand: MutableList<Card>,
@@ -516,34 +548,44 @@ class GameViewModel : ViewModel() {
     ): List<Pair<Int, Int>> {
         val pairs = mutableListOf<Pair<Int, Int>>()
 
-        // 找手牌中最小的副牌（非分牌优先）
-        val handCandidates = hand.indices
-            .filter { !hand[it].isMainTrump && hand[it].pointValue == 0 }
-            .sortedBy { HeuristicEvaluator.cardStrength(hand[it], null, currentLevel) }
-            .toMutableList()
-
-        // 如果非分牌不够，加上分牌
-        if (handCandidates.size < 8) {
-            val pointCards = hand.indices
-                .filter { !hand[it].isMainTrump && it !in handCandidates }
-                .sortedBy { HeuristicEvaluator.cardStrength(hand[it], null, currentLevel) }
-            handCandidates.addAll(pointCards)
+        // 评估手牌中每张牌的价值
+        val handValues = hand.mapIndexed { idx, card ->
+            val strength = HeuristicEvaluator.cardStrength(card, null, currentLevel)
+            val isWeak = !card.isMainTrump && card.pointValue == 0 && strength < 15.0
+            idx to (strength to isWeak)
         }
 
-        // 找底牌中值得换的牌（分牌 > 大牌 > 主牌）
+        // 找手牌中最弱的牌（优先换出）
+        val weakCards = handValues
+            .filter { it.second.second } // 是弱牌
+            .sortedBy { it.second.first } // 按牌力排序
+            .map { it.first }
+            .toMutableList()
+
+        // 如果弱牌不够，加上非主牌的分牌
+        if (weakCards.size < 8) {
+            val pointCards = hand.indices
+                .filter { !hand[it].isMainTrump && it !in weakCards }
+                .sortedBy { HeuristicEvaluator.cardStrength(hand[it], null, currentLevel) }
+            weakCards.addAll(pointCards)
+        }
+
+        // 找底牌中值得换的牌（主牌 > 分牌 > 大牌）
         val bottomCandidates = bottomCards.indices.sortedByDescending { idx ->
             val card = bottomCards[idx]
             var priority = 0.0
-            priority += card.pointValue * 3.0      // 分牌优先
-            priority += card.rank.order * 1.0       // 大牌优先
-            if (card.isMainTrump) priority += 20.0  // 主牌最优先
+            if (card.isMainTrump) priority += 30.0  // 主牌最优先
+            priority += card.pointValue * 2.5       // 分牌优先
+            priority += card.rank.order * 1.2       // 大牌优先
+            // 级牌加成
+            if (card.rank == currentLevel) priority += 15.0
             priority
         }.toMutableList()
 
         // 最多换8张
-        val maxExchange = minOf(8, handCandidates.size, bottomCandidates.size)
+        val maxExchange = minOf(8, weakCards.size, bottomCandidates.size)
         for (i in 0 until maxExchange) {
-            pairs.add(handCandidates[i] to bottomCandidates[i])
+            pairs.add(weakCards[i] to bottomCandidates[i])
         }
 
         return pairs
@@ -604,7 +646,7 @@ class GameViewModel : ViewModel() {
                 if (aiPlayer.handCards.isEmpty()) continue
                 if (aiPlayer.playerType == PlayerType.HUMAN && !aiPlayer.isAiControlled) continue
 
-                delay(400) // 缩短AI跟牌延迟
+                delay(300) // AI跟牌延迟
                 
                 val pointsInRound = roundPlays.sumOf { (_, c) -> CardEvaluator.totalPoints(c) }
                 val isTeammateWinning = checkTeammateWinning(aiIndex, roundPlays)
@@ -634,7 +676,7 @@ class GameViewModel : ViewModel() {
                 }
             }
 
-            delay(500) // 缩短出牌完成等待
+            delay(400) // 出牌完成等待
             resolveCurrentRound(combo, roundPlays)
         }
     }
@@ -677,7 +719,7 @@ class GameViewModel : ViewModel() {
                 if (aiPlayer.handCards.isEmpty()) continue
                 if (aiPlayer.playerType == PlayerType.HUMAN && !aiPlayer.isAiControlled) continue
 
-                delay(400) // 缩短AI跟牌延迟
+                delay(300) // AI跟牌延迟
                 
                 val pointsInRound = roundPlays.sumOf { (_, c) -> CardEvaluator.totalPoints(c) }
                 val isTeammateWinning = checkTeammateWinning(aiIndex, roundPlays)
@@ -706,7 +748,7 @@ class GameViewModel : ViewModel() {
                 }
             }
 
-            delay(500) // 缩短出牌完成等待
+            delay(400) // 出牌完成等待
             resolveCurrentRound(leadCombo, roundPlays)
         }
     }
@@ -753,7 +795,7 @@ class GameViewModel : ViewModel() {
 
         // 延迟后进入下一轮
         viewModelScope.launch {
-            delay(1200) // 缩短轮次过渡时间
+            delay(1000) // 轮次过渡时间
             
             // 清空过渡消息
             _state.value = _state.value.copy(roundTransitionMessage = null)
@@ -781,7 +823,7 @@ class GameViewModel : ViewModel() {
 
                 val winner = _state.value.players[result.winnerIndex]
                 if ((winner.playerType == PlayerType.AI || winner.isAiControlled) && winner.handCards.isNotEmpty()) {
-                    delay(300) // 缩短轮次切换延迟
+                    delay(200) // 轮次切换延迟
                     processAiLead(result.winnerIndex)
                 }
             }
@@ -790,7 +832,7 @@ class GameViewModel : ViewModel() {
 
     private fun processAiLead(aiIndex: Int) {
         viewModelScope.launch {
-            delay(300) // 缩短轮次切换延迟
+            delay(200) // AI首出延迟
 
             val state = _state.value
             val aiPlayer = state.players.getOrNull(aiIndex) ?: return@launch
@@ -1003,41 +1045,37 @@ class GameViewModel : ViewModel() {
 
     // ==================== 底牌交换 ====================
 
+    // 选中的底牌索引列表
+    private val _selectedBottomIndices = MutableStateFlow<List<Int>>(emptyList())
+    val selectedBottomIndices: StateFlow<List<Int>> = _selectedBottomIndices.asStateFlow()
+
+    // 选中的手牌索引列表
+    private val _selectedHandIndices = MutableStateFlow<List<Int>>(emptyList())
+    val selectedHandIndices: StateFlow<List<Int>> = _selectedHandIndices.asStateFlow()
+
     private fun handleSelectForExchange(cardIndex: Int, isBottomCard: Boolean) {
         val state = _state.value
         if (!state.isBottomExchangePhase) return
 
-        val pairs = state.exchangePairs.toMutableMap()
-
         if (isBottomCard) {
-            // 点击底牌：如果已配对则取消，否则设为待配对
-            if (cardIndex in pairs) {
-                pairs.remove(cardIndex)
+            // 点击底牌：切换选中状态
+            val current = _selectedBottomIndices.value.toMutableList()
+            if (cardIndex in current) {
+                current.remove(cardIndex)
             } else {
-                // 底牌设为 -1 表示待配对（等待选择手牌）
-                pairs[cardIndex] = -1
+                current.add(cardIndex)
             }
+            _selectedBottomIndices.value = current
         } else {
-            // 点击手牌：查找待配对的底牌（value == -1）
-            val pendingBottomIndex = pairs.entries.find { it.value == -1 }?.key
-            if (pendingBottomIndex != null) {
-                // 检查该手牌是否已被其他底牌配对
-                if (cardIndex in pairs.values) {
-                    _validationMessage.value = "该手牌已被配对"
-                    _soundEvent.value = SoundEvent.Invalid
-                    return
-                }
-                pairs[pendingBottomIndex] = cardIndex
+            // 点击手牌：切换选中状态
+            val current = _selectedHandIndices.value.toMutableList()
+            if (cardIndex in current) {
+                current.remove(cardIndex)
             } else {
-                // 没有待配对的底牌，检查该手牌是否已配对，是则取消
-                val existingBottom = pairs.entries.find { it.value == cardIndex }?.key
-                if (existingBottom != null) {
-                    pairs.remove(existingBottom)
-                }
+                current.add(cardIndex)
             }
+            _selectedHandIndices.value = current
         }
-
-        _state.value = state.copy(exchangePairs = pairs)
     }
 
     private fun handleConfirmBottomExchange() {
@@ -1045,12 +1083,17 @@ class GameViewModel : ViewModel() {
         if (!state.isBottomExchangePhase) return
 
         val humanPlayer = state.players.getOrNull(0) ?: return
-        val pairs = state.exchangePairs
+        val bottomIndices = _selectedBottomIndices.value
+        val handIndices = _selectedHandIndices.value
 
-        // 过滤掉未完成的配对（value == -1）
-        val validPairs = pairs.filter { it.value >= 0 }
+        // 检查选中数量是否相等
+        if (bottomIndices.size != handIndices.size) {
+            _validationMessage.value = "选中的底牌和手牌数量必须相同"
+            _soundEvent.value = SoundEvent.Invalid
+            return
+        }
 
-        if (validPairs.isEmpty()) {
+        if (bottomIndices.isEmpty()) {
             // 不换底牌，直接进入出牌阶段
             _state.value = state.copy(
                 isBottomExchangePhase = false,
@@ -1059,20 +1102,18 @@ class GameViewModel : ViewModel() {
                 isLeadPhase = true,
                 currentTurnIndex = 0
             )
+            clearExchangeSelection()
             return
         }
 
-        if (validPairs.size < pairs.size) {
-            _validationMessage.value = "有未完成的配对，请完成或取消"
-            _soundEvent.value = SoundEvent.Invalid
-            return
-        }
-
-        // 执行配对交换
+        // 执行交换
         val newBottomCards = state.bottomCards.toMutableList()
         val newHand = humanPlayer.handCards.toMutableList()
 
-        for ((bottomIdx, handIdx) in validPairs) {
+        // 按顺序配对交换
+        for (i in bottomIndices.indices) {
+            val bottomIdx = bottomIndices[i]
+            val handIdx = handIndices[i]
             val temp = newBottomCards[bottomIdx]
             newBottomCards[bottomIdx] = newHand[handIdx]
             newHand[handIdx] = temp
@@ -1091,7 +1132,8 @@ class GameViewModel : ViewModel() {
             currentTurnIndex = 0
         )
 
-        log("  换底牌完成，交换了 ${validPairs.size} 张牌")
+        log("  换底牌完成，交换了 ${bottomIndices.size} 张牌")
+        clearExchangeSelection()
     }
 
     private fun handleCancelBottomExchange() {
@@ -1103,6 +1145,12 @@ class GameViewModel : ViewModel() {
             isLeadPhase = true,
             currentTurnIndex = 0
         )
+        clearExchangeSelection()
+    }
+
+    private fun clearExchangeSelection() {
+        _selectedBottomIndices.value = emptyList()
+        _selectedHandIndices.value = emptyList()
     }
 
     // ==================== 重开 ====================
@@ -1123,6 +1171,216 @@ class GameViewModel : ViewModel() {
         // 重置记牌器
         AiPlayer.resetTracker()
         
+        // 清除保存的进度
+        viewModelScope.launch {
+            progressDao?.clearProgress()
+            _hasSavedProgress.value = false
+        }
+        
         log("\n=== 游戏重置 ===")
+    }
+
+    // ==================== 进度保存/恢复 ====================
+
+    /**
+     * 保存当前游戏进度
+     */
+    fun saveProgress() {
+        val dao = progressDao ?: return
+        val state = _state.value
+
+        // 只在游戏进行中保存
+        if (state.phase == GamePhase.IDLE || state.phase == GamePhase.GAME_OVER) return
+
+        viewModelScope.launch {
+            try {
+                val progress = GameProgressEntity(
+                    id = 1,
+                    phase = state.phase.name,
+                    mainSuit = state.mainSuit?.name,
+                    currentLevel = state.currentLevel.name,
+                    bottomCardsJson = gson.toJson(state.bottomCards.map { it.deckIndex }),
+                    isBottomDug = state.isBottomDug,
+                    teamScoresJson = gson.toJson(state.teamScores),
+                    roundNumber = state.roundNumber,
+                    playersJson = gson.toJson(state.players.map { player ->
+                        mapOf(
+                            "playerId" to player.playerId,
+                            "displayName" to player.displayName,
+                            "playerType" to player.playerType.name,
+                            "handCards" to player.handCards.map { it.deckIndex },
+                            "score" to player.score,
+                            "isDealer" to player.isDealer,
+                            "teamIndex" to player.teamIndex,
+                            "isAiControlled" to player.isAiControlled
+                        )
+                    }),
+                    currentTurnIndex = state.currentTurnIndex,
+                    dealerTeam = state.dealerTeam,
+                    isLeadPhase = state.isLeadPhase,
+                    currentLeadComboJson = state.currentLeadCombo?.let {
+                        gson.toJson(mapOf(
+                            "cards" to it.cards.map { c -> c.deckIndex },
+                            "comboType" to it.comboType.name,
+                            "suit" to it.suit?.name
+                        ))
+                    },
+                    currentRoundPlaysJson = gson.toJson(state.currentRoundPlays.map { (idx, cards) ->
+                        mapOf("playerIndex" to idx, "cardIndices" to cards.map { it.deckIndex })
+                    }),
+                    lastRoundPlaysJson = gson.toJson(state.lastRoundPlays.map { (idx, cards) ->
+                        mapOf("playerIndex" to idx, "cardIndices" to cards.map { it.deckIndex })
+                    }),
+                    lastRoundWinner = state.lastRoundWinner,
+                    isBottomExchangePhase = state.isBottomExchangePhase,
+                    vmMainSuit = currentMainSuit?.name,
+                    vmCallerIndex = currentCallerIndex,
+                    vmFirstCallerIndex = firstCallerIndex,
+                    vmDealerIndex = currentDealerIndex,
+                    vmTeamScoresJson = gson.toJson(teamCollectedPoints),
+                    vmLastRoundComboType = lastRoundComboType.name
+                )
+
+                dao.saveProgress(progress)
+                _hasSavedProgress.value = true
+                log("  进度已保存")
+            } catch (e: Exception) {
+                log("  保存进度失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 恢复保存的游戏进度
+     */
+    fun restoreProgress() {
+        val dao = progressDao ?: return
+
+        viewModelScope.launch {
+            try {
+                val progress = dao.getProgress() ?: return@launch
+
+                // 恢复游戏阶段
+                val phase = GamePhase.valueOf(progress.phase)
+                val mainSuit = progress.mainSuit?.let { Suit.valueOf(it) }
+                val currentLevel = Rank.valueOf(progress.currentLevel)
+
+                // 恢复底牌
+                val bottomCardIndices: List<Int> = gson.fromJson(
+                    progress.bottomCardsJson,
+                    object : TypeToken<List<Int>>() {}.type
+                )
+                val allCards = DeckGenerator.generateDoubleDeck()
+                val cardMap = allCards.associateBy { it.deckIndex }
+                val bottomCards = bottomCardIndices.mapNotNull { cardMap[it] }
+
+                // 恢复队伍分数
+                val teamScores: List<Int> = gson.fromJson(
+                    progress.teamScoresJson,
+                    object : TypeToken<List<Int>>() {}.type
+                )
+
+                // 恢复玩家
+                val playersData: List<Map<String, Any>> = gson.fromJson(
+                    progress.playersJson,
+                    object : TypeToken<List<Map<String, Any>>>() {}.type
+                )
+                val players = playersData.map { data ->
+                    val handCardIndices = (data["handCards"] as List<*>).map { (it as Double).toInt() }
+                    val handCards = handCardIndices.mapNotNull { idx ->
+                        cardMap[idx]?.let { card ->
+                            if (CardEvaluator.isMainTrump(card, mainSuit, currentLevel))
+                                card.asMainTrump()
+                            else card
+                        }
+                    }
+                    Player(
+                        playerId = data["playerId"] as String,
+                        displayName = data["displayName"] as String,
+                        playerType = PlayerType.valueOf(data["playerType"] as String),
+                        handCards = handCards,
+                        score = (data["score"] as Double).toInt(),
+                        isDealer = data["isDealer"] as Boolean,
+                        teamIndex = (data["teamIndex"] as Double).toInt(),
+                        isAiControlled = data["isAiControlled"] as Boolean
+                    )
+                }
+
+                // 恢复出牌记录
+                val currentRoundPlaysData: List<Map<String, Any>> = gson.fromJson(
+                    progress.currentRoundPlaysJson,
+                    object : TypeToken<List<Map<String, Any>>>() {}.type
+                )
+                val currentRoundPlays = currentRoundPlaysData.map { data ->
+                    val playerIndex = (data["playerIndex"] as Double).toInt()
+                    val cardIndices = (data["cardIndices"] as List<*>).map { (it as Double).toInt() }
+                    val cards = cardIndices.mapNotNull { cardMap[it] }
+                    playerIndex to cards
+                }
+
+                val lastRoundPlaysData: List<Map<String, Any>> = gson.fromJson(
+                    progress.lastRoundPlaysJson,
+                    object : TypeToken<List<Map<String, Any>>>() {}.type
+                )
+                val lastRoundPlays = lastRoundPlaysData.map { data ->
+                    val playerIndex = (data["playerIndex"] as Double).toInt()
+                    val cardIndices = (data["cardIndices"] as List<*>).map { (it as Double).toInt() }
+                    val cards = cardIndices.mapNotNull { cardMap[it] }
+                    playerIndex to cards
+                }
+
+                // 恢复首出牌型
+                val currentLeadCombo = progress.currentLeadComboJson?.let { json ->
+                    val data: Map<String, Any> = gson.fromJson(json, object : TypeToken<Map<String, Any>>() {}.type)
+                    val comboCardIndices = (data["cards"] as List<*>).map { (it as Double).toInt() }
+                    val comboCards = comboCardIndices.mapNotNull { cardMap[it] }
+                    val comboType = ComboType.valueOf(data["comboType"] as String)
+                    val comboSuit = (data["suit"] as String?)?.let { Suit.valueOf(it) }
+                    PlayCombo(comboCards, comboType, comboSuit)
+                }
+
+                // 恢复游戏状态
+                _state.value = GameState(
+                    phase = phase,
+                    mainSuit = mainSuit,
+                    currentLevel = currentLevel,
+                    bottomCards = bottomCards,
+                    isBottomDug = progress.isBottomDug,
+                    teamScores = teamScores,
+                    roundNumber = progress.roundNumber,
+                    players = players,
+                    currentTurnIndex = progress.currentTurnIndex,
+                    dealerTeam = progress.dealerTeam,
+                    isLeadPhase = progress.isLeadPhase,
+                    currentLeadCombo = currentLeadCombo,
+                    currentRoundPlays = currentRoundPlays,
+                    lastRoundPlays = lastRoundPlays,
+                    lastRoundWinner = progress.lastRoundWinner,
+                    isBottomExchangePhase = progress.isBottomExchangePhase,
+                    dealingCardIndex = -1 // 恢复时发牌已完成
+                )
+
+                // 恢复ViewModel内部状态
+                currentMainSuit = progress.vmMainSuit?.let { Suit.valueOf(it) }
+                currentCallerIndex = progress.vmCallerIndex
+                firstCallerIndex = progress.vmFirstCallerIndex
+                currentDealerIndex = progress.vmDealerIndex
+                lastRoundComboType = ComboType.valueOf(progress.vmLastRoundComboType)
+                val vmTeamScores: List<Int> = gson.fromJson(
+                    progress.vmTeamScoresJson,
+                    object : TypeToken<List<Int>>() {}.type
+                )
+                teamCollectedPoints.clear()
+                teamCollectedPoints.addAll(vmTeamScores)
+
+                // 重新标记主牌
+                markMainTrumpForAll()
+
+                log("  进度已恢复")
+            } catch (e: Exception) {
+                log("  恢复进度失败: ${e.message}")
+                e.printStackTrace()
+            }
+        }
     }
 }

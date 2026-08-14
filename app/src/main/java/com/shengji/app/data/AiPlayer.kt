@@ -150,6 +150,8 @@ object AiPlayer {
         teamScores: List<Int>,
         myTeam: Int
     ): List<Card> {
+        val requiredCount = leadCombo.cards.size
+
         if (leadSuitCards.isNotEmpty()) {
             // 找该花色的对子
             val pairs = findPairsInSuit(leadSuitCards, mainSuit, currentLevel)
@@ -171,10 +173,12 @@ object AiPlayer {
                 } ?: pairs.first()
             }
 
-            // 没有对子，按规则出两张最小的同花色牌
+            // 没有对子，按规则出最小的同花色牌（手牌不足时出完所有该花色牌）
+            val availableCount = leadSuitCards.size
+            val takeCount = if (availableCount < requiredCount) availableCount else requiredCount
             return leadSuitCards
                 .sortedBy { HeuristicEvaluator.cardStrength(it, mainSuit, currentLevel) }
-                .take(2)
+                .take(takeCount)
         }
 
         return chooseWhenVoid(handCards, leadCombo, mainSuit, currentLevel, pointsInRound, isTeammateWinning)
@@ -194,6 +198,7 @@ object AiPlayer {
         myTeam: Int
     ): List<Card> {
         val requiredCount = leadCombo.cards.size
+        val availableCount = leadSuitCards.size
 
         if (leadSuitCards.isNotEmpty()) {
             // 找该花色的拖拉机
@@ -233,10 +238,11 @@ object AiPlayer {
                 if (combined.size >= requiredCount) return combined.take(requiredCount)
             }
 
-            // 都没有，出最小的同花色牌凑数
+            // 都没有，出最小的同花色牌凑数（手牌不足时出完所有该花色牌）
+            val takeCount = if (availableCount < requiredCount) availableCount else requiredCount
             return leadSuitCards
                 .sortedBy { HeuristicEvaluator.cardStrength(it, mainSuit, currentLevel) }
-                .take(requiredCount)
+                .take(takeCount)
         }
 
         return chooseWhenVoid(handCards, leadCombo, mainSuit, currentLevel, pointsInRound, isTeammateWinning)
@@ -256,19 +262,21 @@ object AiPlayer {
         myTeam: Int
     ): List<Card> {
         val requiredCount = leadCombo.cards.size
+        val availableCount = leadSuitCards.size
 
         if (leadSuitCards.isNotEmpty()) {
-            // 有同花色，出最小的
+            // 有同花色，出最小的（手牌不足时出完所有该花色牌）
+            val takeCount = if (availableCount < requiredCount) availableCount else requiredCount
             return leadSuitCards
                 .sortedBy { HeuristicEvaluator.cardStrength(it, mainSuit, currentLevel) }
-                .take(requiredCount)
+                .take(takeCount)
         }
 
         return chooseWhenVoid(handCards, leadCombo, mainSuit, currentLevel, pointsInRound, isTeammateWinning)
     }
 
     // ═══════════════════════════════════════════════════
-    // 绝门策略（没有首出花色时）
+    // 绝门策略（没有首出花色时）- 增强版
     // ═══════════════════════════════════════════════════
 
     private fun chooseWhenVoid(
@@ -289,6 +297,12 @@ object AiPlayer {
             val wasteCards = nonTrumpCards.filter { it.pointValue == 0 }
             if (wasteCards.size >= requiredCount) {
                 return wasteCards
+                    .sortedBy { HeuristicEvaluator.cardStrength(it, mainSuit, currentLevel) }
+                    .take(requiredCount)
+            }
+            // 没有废牌，出最小的非主牌
+            if (nonTrumpCards.size >= requiredCount) {
+                return nonTrumpCards
                     .sortedBy { HeuristicEvaluator.cardStrength(it, mainSuit, currentLevel) }
                     .take(requiredCount)
             }
@@ -337,6 +351,7 @@ object AiPlayer {
                 .take(requiredCount)
         }
 
+        // 没有废牌，出最小的牌
         return handCards
             .sortedBy { HeuristicEvaluator.cardStrength(it, mainSuit, currentLevel) }
             .take(requiredCount)
@@ -346,6 +361,9 @@ object AiPlayer {
     // 生成首出牌型
     // ═══════════════════════════════════════════════════
 
+    /**
+     * 生成首出牌型
+     */
     private fun generatePossibleLeads(
         handCards: List<Card>,
         mainSuit: Suit?,
@@ -368,6 +386,21 @@ object AiPlayer {
             // 拖拉机
             val tractors = findTractorsInSuit(cards, mainSuit, currentLevel)
             result.addAll(tractors)
+
+            // 甩牌（同花色多张，至少3张）
+            if (cards.size >= 3) {
+                // 甩牌：同花色多张组合
+                val sortedCards = cards.sortedByDescending { it.rank.order }
+                // 3张以上的同花色牌可以甩
+                for (size in 3..sortedCards.size) {
+                    val slingshot = sortedCards.take(size)
+                    // 检查是否是合法的甩牌（不能包含对子或拖拉机的一部分）
+                    val hasPair = slingshot.groupBy { it.rank }.any { it.value.size >= 2 }
+                    if (!hasPair) {
+                        result.add(slingshot)
+                    }
+                }
+            }
         }
 
         return result

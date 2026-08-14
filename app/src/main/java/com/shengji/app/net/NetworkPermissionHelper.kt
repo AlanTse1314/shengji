@@ -23,6 +23,7 @@ object NetworkPermissionHelper {
         val permissions = mutableListOf<String>()
 
         // 基础网络权限
+        permissions.add(Manifest.permission.INTERNET)
         permissions.add(Manifest.permission.ACCESS_WIFI_STATE)
         permissions.add(Manifest.permission.ACCESS_NETWORK_STATE)
         permissions.add(Manifest.permission.CHANGE_WIFI_MULTICAST_STATE)

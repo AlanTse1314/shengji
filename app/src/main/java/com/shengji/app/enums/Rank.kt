@@ -1,7 +1,13 @@
 package com.shengji.app.enums
 
 /**
- * 点数枚举（A最大，依次递减，2最小；大小王最大）
+ * 点数枚举
+ *
+ * 定义扑克牌的所有点数，从小到大排列。
+ * 普通牌 2~A 共 13 级，大小王为特殊点数，权重最高。
+ *
+ * @property display 显示文本（如 "2"、"A"、"大王"）
+ * @property order 排序权重，值越大越大（2=1，A=13，小王=14，大王=15）
  */
 enum class Rank(val display: String, val order: Int) {
     TWO("2", 1),

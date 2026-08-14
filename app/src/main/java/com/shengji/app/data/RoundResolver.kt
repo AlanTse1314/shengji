@@ -7,27 +7,36 @@ import com.shengji.app.enums.Suit
 /**
  * 轮次结算逻辑
  *
- * 判断一轮出牌的赢家，收集本轮得分。
+ * 判断一轮出牌的赢家，收集本轮得分，计算抠底倍数。
+ * 所有方法均为纯函数，无副作用。
  */
 object RoundResolver {
 
+    /**
+     * 轮次结算结果
+     *
+     * @property winnerIndex 赢家玩家索引
+     * @property points 本轮总得分（所有 5、10、K 的分值之和）
+     * @property collectedCards 本轮所有出的牌（收归赢家）
+     */
     data class RoundResult(
-        /** 赢家玩家索引 */
         val winnerIndex: Int,
-        /** 本轮得分 */
         val points: Int,
-        /** 本轮所有出的牌（收集起来给赢家） */
         val collectedCards: List<Card>
     )
 
     /**
      * 判断一轮出牌的赢家
      *
+     * 比较规则：
+     * 1. 主牌出牌 > 跟首出花色 > 其他花色（垫牌）
+     * 2. 同级别内按最大牌的比较权重决定胜负
+     *
      * @param plays 按出牌顺序排列的 (玩家索引, 出的牌列表)
-     * @param leadCombo 首出牌型
-     * @param mainSuit 主花色
+     * @param leadCombo 首出牌型，决定比较基准
+     * @param mainSuit 当前主花色
      * @param currentLevel 当前级牌
-     * @return 轮次结果
+     * @return 轮次结果，包含赢家、得分和收集的牌
      */
     fun resolveRound(
         plays: List<Pair<Int, List<Card>>>,
@@ -61,8 +70,16 @@ object RoundResolver {
     /**
      * 评估一次出牌的比较权重
      *
-     * 主牌 > 首出花色 > 其他花色
-     * 同花色内按最大牌比较
+     * 权重 = 基础权重 + 最大牌比较权重：
+     * - 主牌出牌：基础 10000
+     * - 跟首出花色：基础 5000
+     * - 垫其他花色：基础 0
+     *
+     * @param cards 出的牌
+     * @param leadCombo 首出牌型
+     * @param mainSuit 当前主花色
+     * @param currentLevel 当前级牌
+     * @return 比较权重值，越大越强
      */
     private fun evaluatePlay(
         cards: List<Card>,
@@ -72,7 +89,7 @@ object RoundResolver {
     ): Int {
         val leadSuit = leadCombo.suit
 
-        // 检查是否为主牌出牌
+        // 检查是否全部为主牌（毙牌）
         val isTrumpPlay = cards.all {
             CardEvaluator.isMainTrump(it, mainSuit, currentLevel)
         }
@@ -82,7 +99,7 @@ object RoundResolver {
             CardEvaluator.effectiveSuit(it, mainSuit, currentLevel) == leadSuit
         }
 
-        // 基础权重：主牌出牌 > 首出花色 > 杂牌
+        // 基础权重：主牌 > 首出花色 > 杂牌
         val baseWeight = when {
             isTrumpPlay -> 10000
             isLeadSuitPlay -> 5000
@@ -100,27 +117,30 @@ object RoundResolver {
     /**
      * 计算抠底倍数
      *
-     * 底牌分值根据最后一轮出牌牌型翻倍（README 标准）：
+     * 底牌分值根据最后一轮领出的最大牌型翻倍：
      * - 单张抠底：底牌分 × 2
      * - 对子抠底：底牌分 × 4
      * - 拖拉机（两对）抠底：底牌分 × 16
-     * - 更长拖拉机倍数继续翻倍（每多一对翻一倍）
+     * - 更长拖拉机每多一对翻一倍（三对 × 32，四对 × 64 ...）
      * - 甩牌按单张计算
+     *
+     * @param lastCombo 最后一轮领出的牌型
+     * @param comboSize 牌张数（拖拉机用于计算对数）
+     * @return 倍数
      */
     fun digBottomMultiplier(lastCombo: ComboType, comboSize: Int = 1): Int {
         return when (lastCombo) {
             ComboType.SINGLE -> 2
             ComboType.PAIR -> 4
             ComboType.TRACTOR -> {
-                // 拖拉机基础倍数是16（两对），每多一对翻一倍
-                val pairCount = comboSize / 2  // 计算有多少对
+                val pairCount = comboSize / 2
                 if (pairCount >= 2) {
-                    16 * (1 shl (pairCount - 2))  // 16, 32, 64, 128...
+                    16 * (1 shl (pairCount - 2)) // 16, 32, 64, 128...
                 } else {
-                    4  // 如果只有一对，按对子计算
+                    4 // 单对按对子计算
                 }
             }
-            ComboType.SLINGSHOT -> 2  // 甩牌按单张计算
+            ComboType.SLINGSHOT -> 2 // 甩牌按单张计算
             else -> 2
         }
     }

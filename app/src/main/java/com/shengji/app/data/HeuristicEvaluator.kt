@@ -5,12 +5,14 @@ import com.shengji.app.enums.Rank
 import com.shengji.app.enums.Suit
 
 /**
- * 启发式评分器 - 为每张可能出的牌打分（v2）
+ * 启发式评分器 - 为每张可能出的牌打分（v3 - 增强策略）
  *
- * 核心策略：
+ * 核心策略改进：
  * - 首出：清主 > 出长套 > 出对子/拖拉机 > 出小牌
  * - 跟牌：队友在赢不出分，对手在赢看分值决定是否压
  * - 绝门：有分才杀，用最小主牌杀
+ * - 终局：手牌少时更激进争出牌权
+ * - 队友配合：根据队友出牌判断是否需要支援
  */
 object HeuristicEvaluator {
 
@@ -38,19 +40,24 @@ object HeuristicEvaluator {
 
             // 有很多主牌时积极清主
             if (myTrumpCount >= 6) {
-                score += 30.0 + myTrumpCount * 2.0
+                score += 35.0 + myTrumpCount * 2.5
             } else if (myTrumpCount >= 4) {
-                score += 15.0
+                score += 18.0
             }
 
             // 对子/拖拉机清主更高效
             if (cards.size >= 2) {
-                score += cards.size * 5.0
+                score += cards.size * 6.0
             }
 
             // 主牌中的分牌要谨慎（5、10、K在主牌中很值钱）
             val trumpPoints = cards.sumOf { it.pointValue }
-            score -= trumpPoints * 0.5
+            score -= trumpPoints * 0.4
+
+            // 剩余主牌少时，清主更有价值
+            if (remainingTrump <= 4 && myTrumpCount >= 3) {
+                score += 15.0
+            }
         }
 
         // ── 2. 副牌首出 ──
@@ -62,34 +69,40 @@ object HeuristicEvaluator {
 
             // 长套优先（可以甩牌）
             if (suitCount >= 5) {
-                score += 20.0 + suitCount * 2.0
+                score += 25.0 + suitCount * 2.5
             } else if (suitCount >= 3) {
-                score += 10.0
+                score += 12.0
             }
 
             // 短套（只有1-2张）不适合首出
             if (suitCount <= 2) {
-                score -= 10.0
+                score -= 12.0
             }
 
             // 对子首出价值高（可以逼对手出大牌或拆对子）
             if (cards.size == 2 && cards[0].rank == cards[1].rank) {
-                score += 20.0
+                score += 22.0
                 // 高对更好
                 if (cards[0].rank.order >= Rank.TEN.order) {
-                    score += 10.0
+                    score += 12.0
                 }
             }
 
             // 拖拉机首出价值很高
             if (cards.size >= 4) {
-                score += 25.0 + cards.size * 3.0
+                score += 28.0 + cards.size * 3.5
             }
 
             // 有该花色的分牌时，首出可以收分
             val suitPoints = suitCards.sumOf { it.pointValue }
             if (suitPoints >= 15) {
-                score += 10.0
+                score += 12.0
+            }
+
+            // 花色控制力强时更积极
+            val suitControl = evaluateSuitControl(handCards, suit, mainSuit, currentLevel)
+            if (suitControl >= 15) {
+                score += 8.0
             }
         }
 
@@ -101,7 +114,7 @@ object HeuristicEvaluator {
                 CardEvaluator.effectiveSuit(it, mainSuit, currentLevel) == suit
             }
             if (suitCards.size < 4) {
-                score -= pointValue * 0.3
+                score -= pointValue * 0.35
             }
         }
 
@@ -109,12 +122,12 @@ object HeuristicEvaluator {
         val highCardCount = cards.count { it.rank == Rank.ACE || it.rank == Rank.KING }
         if (highCardCount > 0 && cards.size <= 2) {
             // 单张大牌首出扣分（留着收分更好）
-            score -= highCardCount * 8.0
+            score -= highCardCount * 7.0
         }
 
         // ── 5. 花色控制力 ──
         val suitControl = evaluateSuitControl(handCards, suit, mainSuit, currentLevel)
-        score += suitControl * 0.3
+        score += suitControl * 0.25
 
         // ── 6. 游戏分数策略 ──
         val myScore = teamScores.getOrElse(myTeam) { 0 }
@@ -122,11 +135,22 @@ object HeuristicEvaluator {
 
         // 对手分数高时更激进
         if (opponentScore >= 60) {
-            score += 10.0
+            score += 12.0
         }
         // 自己队伍分数领先时保守
         if (myScore >= 60) {
-            score -= 5.0
+            score -= 6.0
+        }
+
+        // ── 7. 终局策略（手牌少时）──
+        if (handCards.size <= 8) {
+            // 手牌少时，大牌首出价值更高
+            val bigCards = cards.count { it.rank.order >= Rank.TEN.order }
+            score += bigCards * 5.0
+            // 有分牌时更积极首出
+            if (pointValue > 0) {
+                score += 8.0
+            }
         }
 
         return score
@@ -159,13 +183,13 @@ object HeuristicEvaluator {
         if (isTeammateWinning) {
             if (pointsInRound >= 20) {
                 // 场上分多，考虑出分牌帮队友收分
-                score += pointValue * 0.5
+                score += pointValue * 0.6
                 // 但也别出太大的牌
-                score -= cardStrength * 0.3
+                score -= cardStrength * 0.25
             } else {
                 // 场上没分，出最小的牌保留实力
-                score -= cardStrength * 0.8
-                score -= pointValue * 0.5
+                score -= cardStrength * 0.9
+                score -= pointValue * 0.4
             }
             return score
         }
@@ -183,28 +207,28 @@ object HeuristicEvaluator {
                 // 能赢
                 if (pointsInRound >= 15) {
                     // 有分要抢
-                    score += 30.0 + pointsInRound * 0.5
+                    score += 35.0 + pointsInRound * 0.6
                     // 但不要用太大的牌赢小分
                     val overkill = myMaxStrength - leadCardStrength
                     if (overkill > 50) {
-                        score -= overkill * 0.2
+                        score -= overkill * 0.15
                     }
                 } else {
                     // 没分，能不赢就不赢
-                    score -= 15.0
+                    score -= 18.0
                     // 除非手牌很少，需要争出牌权
                     if (handCards.size <= 5) {
-                        score += 10.0
+                        score += 15.0
                     }
                 }
             } else {
                 // 赢不了，出最小的
-                score -= cardStrength * 0.5
+                score -= cardStrength * 0.55
                 // 但如果有分牌，考虑是否要送分
                 if (pointValue > 0) {
                     // 场上已经有分了，再送分不划算
                     if (pointsInRound >= 20) {
-                        score -= pointValue * 0.3
+                        score -= pointValue * 0.35
                     }
                 }
             }
@@ -217,19 +241,27 @@ object HeuristicEvaluator {
                 // 杀牌
                 if (pointsInRound >= 15) {
                     // 有分值得杀
-                    score += 25.0 + pointsInRound * 0.3
+                    score += 28.0 + pointsInRound * 0.35
                     // 用小主牌杀更好
-                    score -= cardStrength * 0.3
+                    score -= cardStrength * 0.25
                 } else {
                     // 没分不值得杀
-                    score -= 20.0
+                    score -= 22.0
                 }
             } else {
                 // 垫牌（不出主牌）
                 // 出废牌
-                score -= cardStrength * 0.6
+                score -= cardStrength * 0.65
                 // 有分的废牌先出掉
-                score += pointValue * 0.2
+                score += pointValue * 0.25
+            }
+        }
+
+        // ── 终局策略 ──
+        if (handCards.size <= 5) {
+            // 手牌少时更激进
+            if (pointValue > 0) {
+                score += 5.0
             }
         }
 
@@ -251,18 +283,18 @@ object HeuristicEvaluator {
 
         // 主牌加成
         if (card.isMainTrump) {
-            strength += 20.0
-            if (card.isBigJoker) strength += 30.0
-            else if (card.isJoker) strength += 25.0
+            strength += 22.0
+            if (card.isBigJoker) strength += 32.0
+            else if (card.isJoker) strength += 27.0
         }
 
         // 级牌加成
         if (card.rank == currentLevel) {
-            strength += 15.0
+            strength += 16.0
         }
 
         // 分牌加成
-        strength += card.pointValue * 0.5
+        strength += card.pointValue * 0.6
 
         return strength
     }
@@ -292,15 +324,25 @@ object HeuristicEvaluator {
         var control = 0.0
 
         // 数量优势
-        control += suitCards.size * 2.0
+        control += suitCards.size * 2.5
 
         // 大牌优势
         val highCards = suitCards.filter { it.rank == Rank.ACE || it.rank == Rank.KING }
-        control += highCards.size * 5.0
+        control += highCards.size * 6.0
 
         // 对子优势
         val pairs = suitCards.groupBy { it.rank }.values.count { it.size >= 2 }
-        control += pairs * 8.0
+        control += pairs * 9.0
+
+        // 拖拉机优势
+        val sortedRanks = suitCards.map { it.rank }.distinct().sortedBy { it.order }
+        var tractorCount = 0
+        for (i in 0 until sortedRanks.size - 1) {
+            if (sortedRanks[i + 1].order - sortedRanks[i].order == 1) {
+                tractorCount++
+            }
+        }
+        control += tractorCount * 4.0
 
         return control
     }
@@ -333,6 +375,9 @@ object HeuristicEvaluator {
 
         // 主牌不多时只杀大分
         if (trumpCards.size <= 2 && pointsInRound < 30) return false
+
+        // 终局更积极杀牌
+        if (handCards.size <= 8 && pointsInRound >= 15) return true
 
         return pointsInRound > minTrumpStrength * 2
     }

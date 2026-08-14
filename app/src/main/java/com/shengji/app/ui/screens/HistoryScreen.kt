@@ -12,6 +12,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.shengji.app.db.GameRecordEntity
 import com.shengji.app.db.AppDatabase
+import com.shengji.app.ui.utils.rememberScreenSize
 import java.text.SimpleDateFormat
 import kotlinx.coroutines.flow.flowOf
 import java.util.*
@@ -24,12 +25,13 @@ fun HistoryScreen(
     val records by (database?.gameRecordDao()?.getAllRecords()
         ?: kotlinx.coroutines.flow.flowOf(emptyList()))
         .collectAsState(initial = emptyList())
+    val screenSize = rememberScreenSize()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding() // 避开手机状态栏
-            .padding(16.dp)
+            .statusBarsPadding()
+            .padding(screenSize.spacingLarge)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically
@@ -37,7 +39,7 @@ fun HistoryScreen(
             TextButton(onClick = onBack) {
                 Text("← 返回")
             }
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(screenSize.spacingMedium))
             Text(
                 text = "历史记录",
                 style = MaterialTheme.typography.headlineMedium,
@@ -45,7 +47,7 @@ fun HistoryScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(screenSize.spacingLarge))
 
         if (records.isEmpty()) {
             Box(
@@ -57,7 +59,7 @@ fun HistoryScreen(
                         text = "📋",
                         style = MaterialTheme.typography.displayMedium
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(screenSize.spacingMedium))
                     Text(
                         text = "暂无对局记录",
                         style = MaterialTheme.typography.bodyLarge,
@@ -72,7 +74,7 @@ fun HistoryScreen(
             }
         } else {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(screenSize.spacingMedium)
             ) {
                 items(records) { record ->
                     HistoryRecordCard(record = record)

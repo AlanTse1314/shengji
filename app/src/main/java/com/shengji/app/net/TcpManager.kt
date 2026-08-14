@@ -100,11 +100,14 @@ class TcpManager {
         val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
         val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
 
+        // 先计算玩家索引，再添加到列表
+        val playerIndex = synchronized(clientConnections) {
+            clientConnections.size + 1  // +1 因为房主是 0
+        }
+
         synchronized(clientConnections) {
             clientConnections.add(writer)
         }
-
-        val playerIndex = synchronized(clientConnections) { clientConnections.size }
 
         scope.launch {
             try {
@@ -366,5 +369,52 @@ fun Player.toSerializable(): SerializablePlayer {
         handCardIndices = handCards.map { it.deckIndex },
         score = score,
         teamIndex = teamIndex
+    )
+}
+
+/**
+ * 反序列化：SerializableGameState → GameState
+ */
+fun SerializableGameState.toGameState(): GameState {
+    val allCards = DeckGenerator.generateDoubleDeck()
+    val cardMap = allCards.associateBy { it.deckIndex }
+
+    val gamePhase = try { GamePhase.valueOf(phase) } catch (_: Exception) { GamePhase.IDLE }
+    val gameMainSuit = mainSuit?.let { try { Suit.valueOf(it) } catch (_: Exception) { null } }
+    val gameCurrentLevel = try { Rank.valueOf(currentLevel) } catch (_: Exception) { Rank.TWO }
+
+    val gameBottomCards = bottomCards.mapNotNull { cardMap[it] }
+
+    val gamePlayers = players.map { sp ->
+        val handCards = sp.handCardIndices.mapNotNull { idx ->
+            cardMap[idx]?.let { card ->
+                if (CardEvaluator.isMainTrump(card, gameMainSuit, gameCurrentLevel))
+                    card.asMainTrump()
+                else card
+            }
+        }
+        Player(
+            playerId = sp.playerId,
+            displayName = sp.displayName,
+            playerType = try { PlayerType.valueOf(sp.playerType) } catch (_: Exception) { PlayerType.AI },
+            handCards = handCards,
+            score = sp.score,
+            teamIndex = sp.teamIndex
+        )
+    }
+
+    return GameState(
+        phase = gamePhase,
+        mainSuit = gameMainSuit,
+        currentLevel = gameCurrentLevel,
+        bottomCards = gameBottomCards,
+        isBottomDug = isBottomDug,
+        teamScores = teamScores,
+        roundNumber = roundNumber,
+        players = gamePlayers,
+        currentTurnIndex = currentTurnIndex,
+        dealerTeam = dealerTeam,
+        isLeadPhase = isLeadPhase,
+        dealingCardIndex = -1
     )
 }

@@ -5,46 +5,53 @@ import com.shengji.app.enums.Rank
 /**
  * 计分升级结算逻辑
  *
- * 升级计分规则（README 标准）：
- * - 共 200 分（两副牌：5×8 + 10×8 + K×8 = 200）
- * - 庄家方（叫主方）为守方，闲家方为攻方
- * - 闲家得分决定升级幅度：
- *   - 0 分：庄家升 3 级
- *   - 1-39 分：庄家升 2 级
- *   - 40-79 分：庄家升 1 级
- *   - 80-119 分：庄家下台，闲家上台不升级
- *   - 120-159 分：闲家升 1 级
- *   - 160-199 分：闲家升 2 级
- *   - 200 分：闲家升 3 级
+ * 两副牌总分 200 分（5×8 + 10×8 + K×8）。
+ * 庄家方为守方，闲家为攻方，闲家得分决定升级幅度：
+ *
+ * | 闲家得分 | 结果 |
+ * |---------|------|
+ * | 0 分 | 庄家连升 3 级（大光） |
+ * | 1~39 分 | 庄家连升 2 级（小光） |
+ * | 40~79 分 | 庄家升 1 级 |
+ * | 80~119 分 | 闲家上台，不升级 |
+ * | 120~159 分 | 闲家升 1 级 |
+ * | 160~199 分 | 闲家升 2 级 |
+ * | 200 分 | 闲家连升 3 级（大光） |
  */
 object ScoringUseCase {
 
+    /**
+     * 本局结算结果
+     *
+     * @property defenderScore 庄家队伍最终得分（200 - 闲家得分）
+     * @property attackerScore 闲家队伍得分（已 clamp 到 0~200）
+     * @property defenderLevelUp 庄家队伍升级数（0 表示不升级，负数无意义）
+     * @property attackerLevelUp 闲家队伍升级数（0 表示不升级，负数无意义）
+     * @property dealerChanged 是否换庄（闲家得分 ≥ 80 则换庄）
+     * @property newLevel 新的级牌
+     * @property newDealerTeam 新的庄家队伍编号
+     * @property summary 结算说明文本，用于 UI 展示
+     */
     data class SettlementResult(
-        /** 庄家队伍最终得分（含抠底） */
         val defenderScore: Int,
-        /** 闲家队伍得分 */
         val attackerScore: Int,
-        /** 庄家队伍升级数（负数表示下台） */
         val defenderLevelUp: Int,
-        /** 闲家队伍升级数（负数表示下台） */
         val attackerLevelUp: Int,
-        /** 是否换庄 */
         val dealerChanged: Boolean,
-        /** 新的级牌 */
         val newLevel: Rank,
-        /** 新的庄家队伍 */
         val newDealerTeam: Int,
-        /** 结算说明 */
         val summary: String
     )
 
     /**
      * 计算本局结算
      *
-     * @param attackerTotalScore 闲家总得分（出牌得分 + 抠底得分）
-     * @param dealerTeam 庄家队伍编号
+     * 根据闲家总得分（出牌得分 + 抠底得分）决定升级和换庄。
+     *
+     * @param attackerTotalScore 闲家总得分
+     * @param dealerTeam 庄家队伍编号（0 或 1）
      * @param currentLevel 当前级牌
-     * @param dealerLevel 庄家当前级别（用于计算升级）
+     * @param dealerLevel 庄家当前级别（默认等于 currentLevel）
      * @return 结算结果
      */
     fun settle(
@@ -53,7 +60,6 @@ object ScoringUseCase {
         currentLevel: Rank,
         dealerLevel: Rank = currentLevel
     ): SettlementResult {
-        // 分数 clamp 到 0-200
         val clampedScore = attackerTotalScore.coerceIn(0, 200)
         val defenderScore = 200 - clampedScore
 
@@ -63,12 +69,9 @@ object ScoringUseCase {
 
         val newDealerTeam = if (dealerChanged) 1 - dealerTeam else dealerTeam
 
-        // 计算新级别
         val newLevel = if (dealerChanged) {
-            // 闲家上台，按闲家升级数计算
             advanceLevel(currentLevel, attackerLevelUp)
         } else {
-            // 庄家继续，按庄家升级数计算
             advanceLevel(currentLevel, defenderLevelUp)
         }
 
@@ -98,19 +101,20 @@ object ScoringUseCase {
     }
 
     /**
-     * 根据闲家得分计算升级数
+     * 根据闲家得分计算双方升级数
      *
-     * @return Pair(庄家升级数, 闲家升级数)，负数表示下台（实际不升级）
+     * @param attackerScore 闲家得分（0~200）
+     * @return Pair(庄家升级数, 闲家升级数)，未上台一方的值为 0
      */
     fun calculateLevelUp(attackerScore: Int): Pair<Int, Int> {
         return when {
-            attackerScore == 0 -> Pair(3, 0)           // 大光：庄家升3级
-            attackerScore in 1..39 -> Pair(2, 0)       // 小光：庄家升2级
-            attackerScore in 40..79 -> Pair(1, 0)      // 庄家升1级
+            attackerScore == 0 -> Pair(3, 0)           // 大光：庄家升 3 级
+            attackerScore in 1..39 -> Pair(2, 0)       // 小光：庄家升 2 级
+            attackerScore in 40..79 -> Pair(1, 0)      // 庄家升 1 级
             attackerScore in 80..119 -> Pair(0, 0)     // 换庄但不升级
-            attackerScore in 120..159 -> Pair(0, 1)    // 闲家升1级
-            attackerScore in 160..199 -> Pair(0, 2)    // 闲家升2级
-            attackerScore >= 200 -> Pair(0, 3)         // 大光：闲家升3级
+            attackerScore in 120..159 -> Pair(0, 1)    // 闲家升 1 级
+            attackerScore in 160..199 -> Pair(0, 2)    // 闲家升 2 级
+            attackerScore >= 200 -> Pair(0, 3)         // 大光：闲家升 3 级
             else -> Pair(0, 0)
         }
     }
@@ -118,7 +122,11 @@ object ScoringUseCase {
     /**
      * 推进级牌
      *
-     * 级牌顺序：2→3→4→5→6→7→8→9→10→J→Q→K→A→2(完成一圈)
+     * 级牌顺序：2→3→4→5→6→7→8→9→10→J→Q→K→A，到 A 后回到 2 循环。
+     *
+     * @param currentLevel 当前级牌
+     * @param steps 推进步数
+     * @return 新的级牌
      */
     fun advanceLevel(currentLevel: Rank, steps: Int): Rank {
         val levelOrder = listOf(
