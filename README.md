@@ -5,7 +5,7 @@
 <h1 align="center">🃏 升级（Sheng Ji）</h1>
 
 <p align="center">
-  <strong>一款基于 Jetpack Compose + MVVM 架构的 Android 纸牌游戏</strong>
+  <strong>中国最流行的四人扑克，完整搬上 Android —— 单机打 AI，或同一 WiFi 零配置开房</strong>
 </p>
 
 <p align="center">
@@ -14,6 +14,10 @@
   <img src="https://img.shields.io/badge/UI-Jetpack_Compose-orange?logo=jetpackcompose" alt="UI">
   <img src="https://img.shields.io/badge/Architecture-MVVM-purple" alt="Architecture">
   <img src="https://img.shields.io/badge/License-Learning-blue" alt="License">
+</p>
+
+<p align="center">
+  🎯 完整规则 · 🤖 四档 AI（含 Q-Learning 自我学习） · 📡 局域网零配置开房 · 🎨 Material 3 · 👴 老人友好
 </p>
 
 <p align="center">
@@ -52,10 +56,12 @@
 | 亮点 | 说明 |
 |:-----|:-----|
 | 🎯 **完整规则实现** | 108张牌、叫主反主、出牌校验、计分升级，完整还原经典玩法 |
-| 🤖 **智能 AI 对手** | 基于启发式评估的 AI 策略，支持首出/跟牌/叫主/换底牌 |
+| 🤖 **智能 AI 对手** | 基于启发式评估 + 蒙特卡洛模拟 + Q-Learning 自我学习，支持 4 个难度等级 |
 | 📡 **局域网联机** | UDP 自动发现 + TCP 实时通信，零配置开房 |
 | 🎨 **精美 UI 设计** | Material3 设计语言，飞牌动画、缩放渐入效果 |
+| 🃏 **多种牌面款式** | 单车牌/姚记牌两种扑克牌样式可选 |
 | 📱 **全设备适配** | 自动适配手机/平板各种尺寸，支持深色模式 |
+| 🎛️ **丰富设置** | 背景主题/音效/字体大小/牌面大小/牌面款式/AI难度 |
 
 ### 1.3 适用场景
 
@@ -82,6 +88,8 @@
 | 出牌动画 | 牌出现时带缩放渐入效果 |
 | 音效反馈 | 出牌/胜利/失败/无效操作均有音效 |
 | 弹窗提示 | 亮主/反主/底牌/结算/退出确认弹窗 |
+| AI 多难度 | 支持 EASY/MEDIUM/HARD/MASTER 四个难度等级 |
+| AI 自我学习 | MASTER 难度支持 Q-Learning 在线学习 |
 
 ### 2.2 联机模式（局域网）✅
 
@@ -92,24 +100,34 @@
 | 老人友好设计 | 大字体、大白话权限引导，适合全年龄段 |
 | 权限管理 | 网络权限动态申请，拒绝后可手动开启 |
 
-### 2.3 其他功能 ✅
+### 2.3 设置功能 ✅
+
+| 功能 | 说明 |
+|:-----|:-----|
+| 背景主题 | 6 种背景颜色主题（经典绿/深海蓝/神秘紫/中国红/暗夜黑/木纹棕） |
+| 音效控制 | 开关音效 + 音量滑块调节 |
+| 字体大小 | 0.7x - 2.0x 可调，设置页实时预览 |
+| 牌面大小 | 0.7x - 2.0x 可调，所有卡牌/按钮同步缩放 |
+| AI 难度 | 四个难度等级可选（新手/中级/高级/大师） |
+| 牌面款式 | 两种扑克牌样式（单车牌/姚记牌） |
+
+### 2.4 其他功能 ✅
 
 | 功能 | 说明 |
 |:-----|:-----|
 | 对局历史 | Room 本地存储，随时回顾历史战绩 |
 | Material3 主题 | 支持深色模式，视觉体验统一 |
 | 屏幕自适应 | 手机/平板自动适配 |
+| 存档功能 | 退出时可保存进度，下次继续 |
 | 代码审查 | 完整的代码审查与测试报告 |
 
-### 2.4 待开发功能 🚧
+### 2.5 待开发功能 🚧
 
-- [ ] 多局连续对战（打 A 结束后自动开局）
-- [ ] 联机模式完善（实时游戏状态同步）
-- [ ] 更多 AI 难度等级（初级/中级/高级）
 - [ ] 出牌回放功能
 - [ ] 在线匹配（跨局域网）
 - [ ] 自定义规则配置（底牌数、甩牌开关等）
 - [ ] 国际化支持（英文界面）
+- [ ] 更多牌面款式
 
 ---
 
@@ -182,7 +200,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/ShengJi.git
+git clone https://gitee.com/yin-zhenhua/shengji.git
 
 # 2. 进入项目目录
 cd ShengJi
@@ -293,11 +311,15 @@ adb install 升级.apk
 
 | 配置项 | 位置 | 说明 |
 |:-------|:-----|:-----|
+| 背景主题 | 设置页 | 6种背景颜色主题可选 |
+| 音效开关 | 设置页 | 开启/关闭游戏音效 |
+| 音效音量 | 设置页 | 调节音效音量大小 |
+| 字体大小 | 设置页 | 0.7x - 2.0x 可调 |
+| 牌面大小 | 设置页 | 0.7x - 2.0x 可调 |
+| 牌面款式 | 设置页 | 单车牌/姚记牌两种样式 |
+| AI 难度 | 设置页 | EASY/MEDIUM/HARD/MASTER |
 | `minSdk` | `app/build.gradle.kts` | 最低支持 Android 版本（默认 24） |
 | `targetSdk` | `app/build.gradle.kts` | 目标 Android 版本（默认 35） |
-| `versionCode` | `app/build.gradle.kts` | 版本号（每次发布递增） |
-| `versionName` | `app/build.gradle.kts` | 版本名称（显示给用户） |
-| `isMinifyEnabled` | `app/build.gradle.kts` | 是否启用代码混淆（默认 false） |
 | `UDP 端口` | `UdpDiscovery.kt` | UDP 广播端口（默认 9876） |
 | `TCP 端口` | `TcpManager.kt` | TCP 通信端口（默认 9877） |
 
@@ -434,14 +456,18 @@ ShengJi/
 │   │   │   ├── RuleConfig.kt        #   规则配置
 │   │   │   ├── DeckGenerator.kt     #   牌组生成 + 洗牌
 │   │   │   ├── CardEvaluator.kt     #   牌面评估
-│   │   │   ├── CardTracker.kt       #   记牌器
+│   │   │   ├── CardTracker.kt       #   记牌器（增强版）
 │   │   │   ├── HeuristicEvaluator.kt#   启发式评估器
+│   │   │   ├── MonteCarloSimulator.kt#  蒙特卡洛模拟器
+│   │   │   ├── AiLearner.kt         #   AI Q-Learning 学习器
+│   │   │   ├── AiDifficulty.kt      #   AI 难度枚举
 │   │   │   ├── PlayValidation.kt    #   出牌校验
 │   │   │   ├── RoundResolver.kt     #   轮次结算
-│   │   │   ├── AiPlayer.kt          #   AI 策略
+│   │   │   ├── AiPlayer.kt          #   AI 策略（多难度）
 │   │   │   ├── DealUseCase.kt       #   发牌逻辑
 │   │   │   ├── CallMainUseCase.kt   #   叫主逻辑
 │   │   │   ├── DigBottomUseCase.kt  #   抠底逻辑
+│   │   │   ├── SettingsManager.kt   #   设置管理器
 │   │   │   └── ScoringUseCase.kt    #   计分升级
 │   │   ├── enums/                    # 📋 枚举定义
 │   │   ├── viewmodel/                # 🎯 ViewModel 层
@@ -467,7 +493,7 @@ ShengJi/
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/ShengJi.git
+git clone https://gitee.com/yin-zhenhua/shengji.git
 cd ShengJi
 
 # 2. 构建 Debug APK
@@ -641,6 +667,33 @@ fun digBottomMultiplier(lastCombo: ComboType, comboSize: Int = 1): Int {
 
 ## 9. 更新日志
 
+### v1.1.0 (2026-08-31)
+
+#### 🎉 新增功能
+- AI 多难度系统（EASY/MEDIUM/HARD/MASTER）
+- AI Q-Learning 自我学习（MASTER 难度）
+- 蒙特卡洛模拟搜索（HARD 难度）
+- 字体大小调节（0.7x - 2.0x）
+- 牌面大小调节（0.7x - 2.0x）
+- 牌面款式选择（单车牌/姚记牌）
+- 音效音量控制
+- 存档保存/恢复功能
+- 联机使用说明
+- 设置页实时预览字体效果
+
+#### 🐛 问题修复
+- 修复平局决胜逻辑
+- 修复无主分类问题
+- 修复出牌按钮状态
+- 修复网络队友获胜逻辑
+- 修复出牌后选中状态未清除
+- 修复 AI 首出评估器奖励 A/K 牌
+
+#### 🔧 改进
+- 全页面支持滚动
+- 存档覆盖提示
+- 记牌器增强
+
 ### v1.0.0 (2024-01-XX)
 
 #### 🎉 新增功能
@@ -682,9 +735,9 @@ fun digBottomMultiplier(lastCombo: ComboType, comboSize: Int = 1): Int {
 
 ### 联系方式
 
-- 项目维护者：【维护者姓名】
-- 邮箱：【邮箱地址】
-- 问题反馈：[GitHub Issues](https://github.com/your-username/ShengJi/issues)
+- 项目维护者：yzh
+- 邮箱：592989785@qq.com
+- 问题反馈：[Gitee Issues](https://gitee.com/yin-zhenhua/shengji/issues)
 
 ---
 
